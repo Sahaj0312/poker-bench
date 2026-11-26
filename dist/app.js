@@ -1,5 +1,6 @@
 import {simulate,makeSeed,NAMES,VERSION} from './engine.js';
 import {practiceClient,renderDecision} from './play-controls.js';
+import {chipPile} from './chips.js';
 import {symbol} from './seats.js';
 import {editLineup} from './lineup.js';
 import {icon,paintIcons} from './icons.js';
@@ -44,14 +45,14 @@ function renderStage(e){
     if(Number.isFinite(p.lastResponseSeconds)) status+=' · '+responseTime(p.lastResponseSeconds);
     if(onClock) status='Acting · '+Math.max(0,Math.floor((Date.now()-session.turnStartedAt)/1000))+' s';
     return `<div class="pod seat${i}${p.folded?' folded':''}${active?' acting':''}">
-      <div class="seatbody">${face(p.name)}<div class="info"><div class="playername" title="${esc(p.name)}">${esc(p.name)}</div><div class="stack">${fmt(p.stack)}</div></div>
+      ${chipPile(p.stack,session.rules.stack)}<div class="seatbody">${face(p.name)}<div class="info"><div class="playername" title="${esc(p.name)}">${esc(p.name)}</div><div class="stack">${fmt(p.stack)}</div></div>
       <div class="hole">${(p.hiddenCount?Array(p.hiddenCount).fill(null):p.cards).map(c=>card(c,true)).join('')}</div></div>
       <div class="seatstatus">${badge?'<b class="posbadge">'+badge+'</b>':''}<span>${esc(status)}</span></div></div>`;
   }).join('');
   const pot=e.type==='result'?e.pots.filter(p=>!p.refund).reduce((s,p)=>s+p.amount,0):e.pot;
   $('#stage').innerHTML=`<div class="stagebar"><span class="stageid">${icon('table')} Table 01</span><span class="stageview">${icon('eye')} ${session.privateTable?(session.mySeat?'Your seat · '+esc(session.mySeat):'Public view'):'Spectator view'}</span></div>
-    <div class="felt" aria-hidden="true"><div class="feltin"></div></div>
-    <div class="centerboard"><div class="pot">${icon('layers')}<small>${e.type==='result'?'Awarded':'Pot'}</small><b>${fmt(pot)}</b></div>
+    <div class="felt" aria-hidden="true"></div>
+    <div class="centerboard"><div class="pot">${e.type==='result'?'':chipPile(e.pot,session.rules.stack)}<small>${e.type==='result'?'Awarded':'Pot'}</small><b>${fmt(pot)}</b></div>
     <div class="boardcards">${Array.from({length:5},(_,i)=>card(e.board[i])).join('')}</div><div class="streetlabel">${esc(e.street)}</div></div>${seats}
     <button id="audit" class="stageaudit">${icon('shield')} Fairness log</button>`;
   $('#audit').onclick=auditDialog;
