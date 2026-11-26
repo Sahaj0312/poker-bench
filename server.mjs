@@ -2,14 +2,40 @@ import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { simulate,makeSeed,defaults,NAMES } from './dist/engine.js';
+import { simulate,makeSeed,defaults,NAMES,checkLineup } from './dist/engine.js';
+import { isLoopback } from './dist/connections.js';
 import { baseConfig,providerMove } from './providers.mjs';
 const root=path.dirname(fileURLToPath(import.meta.url));
 const data=process.env.RIVER_DATA_DIR||path.join(root,'data');
 await fs.mkdir(data,{recursive:true,mode:0o700});
 const configFile=path.join(data,'players.json');
 let saved={};try{saved=JSON.parse(await fs.readFile(configFile,'utf8'));}catch(e){if(e.code!=='ENOENT')throw e;}
-const config=()=>Object.fromEntries(NAMES.map(n=>[n,{...baseConfig[n],...saved[n],key:saved[n]?.key||process.env['RIVER_'+n.toUpperCase()+'_KEY']||''}]));
+function envConfig(slot){
+  const prefix='RIVER_'+slot.toUpperCase()+'_';
+  const base={...baseConfig[slot],name:slot};
+  for(const field of ['name','kind','model','url'])if(process.env[prefix+field.toUpperCase()])base[field]=process.env[prefix+field.toUpperCase()];
+  return base;
+}
+function config(){
+  return Object.fromEntries(NAMES.map(slot=>{
+    const base=envConfig(slot);
+    const row={...base,...saved[slot]};
+    const sameEndpoint=base.url===row.url && base.kind===row.kind;
+    const envKey=sameEndpoint?process.env['RIVER_'+slot.toUpperCase()+'_KEY']:'';
+    return [slot,{...row,key:row.key||envKey||''}];
+  }));
+}
+function connection(row,slot){
+  const kind=row.kind;
+  if(!['codex','compatible','anthropic','typesafe'].includes(kind))throw Error('Choose a supported protocol.');
+  const model=String(row.model||'').trim();
+  const url=kind==='codex'?'':String(row.url||'').trim();
+  if(url){
+    const u=new URL(url);
+    if((u.protocol!=='https:' && !(u.protocol==='http:' && isLoopback(url))) || u.username||u.password||u.search||u.hash)throw Error('Use HTTPS or a local HTTP endpoint. Keep credentials out of the URL.');
+  }
+  return {kind,model,url,name:String(row.name??slot).trim()};
+}
 const safeConfig=c=>Object.fromEntries(Object.entries(c).map(([n,{key,...rest}])=>[n,{...rest,hasKey:!!key}]));
 let current=null, wake=null, abort=null, task=null;
 const filename=id=>path.join(data,id+'.jsonl');
@@ -29,16 +55,21 @@ async function run(options,players){
   const seed=makeSeed(), id=crypto.randomUUID();
   const stop=new AbortController();abort=stop;
   let ready,fail;const started=new Promise((a,b)=>{ready=a;fail=b;});
-  const models=Object.fromEntries(NAMES.map(n=>[n,{kind:players[n].kind,model:players[n].model,endpoint:players[n].url}]));
-  task=simulate({id,seed,options,mode:'models',models,
+  const slots=new Map(NAMES.map(slot=>[players[slot].name,slot]));
+  const lineup=checkLineup([...slots.keys()]);
+  const models=Object.fromEntries(NAMES.map(slot=>{
+    const p=players[slot];return [p.name,{kind:p.kind,model:p.model,endpoint:p.url}];
+  }));
+  task=simulate({id,seed,options,mode:'models',models,lineup,
     onStart:async session=>{current=session;await append(id,{meta:{...session,events:[]}});ready();},
     onEvent:async event=>{await append(id,{event});},
     decide:async (view,restartClock)=>{
       for(;;){
         stop.signal.throwIfAborted();current.status='running';current.waitingFor=view.name;delete current.error;
         try{
-          const frozen=players[view.name], updated=config()[view.name];
-          const seatConfig=updated.url===frozen.url?{...frozen,key:updated.key}:frozen;
+          const slot=slots.get(view.name);
+          const frozen=players[slot], updated=config()[slot];
+          const seatConfig=updated.url===frozen.url && updated.kind===frozen.kind?{...frozen,key:updated.key}:frozen;
           current.turnStartedAt=Date.now();
           restartClock();
           try{return await providerMove(seatConfig,view,stop.signal);}
@@ -68,26 +99,45 @@ const app=http.createServer(async(req,res)=>{
     if(!['localhost:'+port,'127.0.0.1:'+port].includes(host))return json(res,403,{error:'Local connections only'});
     const url=new URL(req.url,'http://'+host), p=url.pathname;
     if(p.startsWith('/api/')){
-      if(req.method==='POST' && (req.headers.origin!=='http://'+host || !req.headers['content-type']?.startsWith('application/json')))return json(res,403,{error:'Use the local River Room UI'});
+      if(req.method==='POST' && (req.headers.origin!=='http://'+host || !req.headers['content-type']?.startsWith('application/json')))return json(res,403,{error:'Use the local Poker Bench app'});
       if(req.method==='GET'&&p==='/api/config')return json(res,200,{players:safeConfig(config()),current:current?.id});
       if(req.method==='POST'&&p==='/api/config'){
         const incoming=await body(req), next={}, old=config();
         for(const n of NAMES){
           const row=incoming[n];if(!row)throw Error('Missing '+n);
-          const kind=n==='Astra'?'codex':row.kind;
-          if(!['codex','compatible','anthropic'].includes(kind)||(n!=='Astra'&&kind==='codex'))throw Error('Unknown provider');
-          const model=String(row.model||'').trim(), endpoint=kind==='codex'?'':String(row.url||'').trim();
-          if(endpoint){const u=new URL(endpoint);if(u.protocol!=='https:'||u.username||u.password||u.search||u.hash)throw Error('Use an HTTPS endpoint without credentials or query parameters.');}
-          if(endpoint!==old[n].url && old[n].key && !row.key)throw Error('Enter a fresh key for '+n+' when changing its endpoint.');
-          next[n]={kind,model,url:endpoint,key:row.key||saved[n]?.key||''};
+          const c=connection(row,n);
+          const same=c.url===old[n].url && c.kind===old[n].kind;
+          next[n]={...c,key:c.kind==='codex'?'':String(row.key||(!row.clearKey && same?saved[n]?.key:'')||'')};
         }
+        checkLineup(NAMES.map(n=>next[n].name));
         const temp=configFile+'.'+crypto.randomUUID();await fs.writeFile(temp,JSON.stringify(next),{mode:0o600});await fs.rename(temp,configFile);saved=next;
         return json(res,200,{players:safeConfig(config())});
+      }
+      if(req.method==='POST'&&p==='/api/models'){
+        const row=await body(req);
+        if(!NAMES.includes(row.slot))throw Error('Unknown seat.');
+        const c=connection(row,row.slot),old=config()[row.slot];
+        const key=row.key||(!row.clearKey && c.url===old.url && c.kind===old.kind?old.key:'');
+        const suffix={compatible:'/chat/completions',anthropic:'/messages',typesafe:'/systemone'}[c.kind];
+        if(!suffix||!c.url.endsWith(suffix))throw Error('Enter a model ID for this endpoint.');
+        const target=c.url.slice(0,-suffix.length)+'/models';
+        const headers={};
+        if(c.kind==='anthropic'){headers['x-api-key']=key;headers['anthropic-version']='2023-06-01';}
+        else if(key)headers.Authorization='Bearer '+key;
+        const result=await fetch(target,{headers,signal:AbortSignal.timeout(12000),redirect:'error'});
+        if(!result.ok)throw Error('Model list returned HTTP '+result.status+'. Check the key or enter a model ID.');
+        const payload=await result.json();
+        const rows=Array.isArray(payload)?payload:payload.data??payload.models;
+        if(!Array.isArray(rows))throw Error('Enter the model ID supplied by this provider.');
+        const ids=rows.map(m=>typeof m==='string'?m:m.id??m.name).filter(n=>typeof n==='string'&&n.length>0);
+        return json(res,200,{models:[...new Set(ids)].sort()});
       }
       if(req.method==='POST'&&p==='/api/sessions'){
         const options=defaults(await body(req)), players=config();
         if(task)return json(res,409,{error:'A model session is already running.'});
-        const missing=NAMES.filter(n=>!players[n].model||(n!=='Astra'&&(!players[n].key||!players[n].url)));
+        for(const slot of NAMES)connection(players[slot],slot);
+        checkLineup(NAMES.map(n=>players[n].name));
+        const missing=NAMES.map(n=>players[n]).filter(p=>!p.model||(p.kind!=='codex'&&(!p.url||(!p.key&&!isLoopback(p.url))))).map(p=>p.name);
         if(missing.length)throw Error('Configure these seats first: '+missing.join(', '));
         return json(res,201,{id:await run(options,players)});
       }
@@ -115,4 +165,4 @@ const app=http.createServer(async(req,res)=>{
     res.writeHead(200,{'Content-Type':({'.js':'text/javascript','.css':'text/css','.html':'text/html','.webp':'image/webp','.svg':'image/svg+xml','.ttf':'font/ttf','.png':'image/png'})[path.extname(file)]||'application/octet-stream','X-Content-Type-Options':'nosniff'});res.end(bytes);
   }catch(e){json(res,e.code==='ENOENT'?404:400,{error:e.code==='ENOENT'?'Not found':e.message});}
 });
-app.listen(port,'127.0.0.1',()=>console.log('River Room is open at http://localhost:'+port));
+app.listen(port,'127.0.0.1',()=>console.log('Poker Bench is open at http://localhost:'+port));

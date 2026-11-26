@@ -23,7 +23,12 @@ process.stdin.on('end',()=>{const v=JSON.parse(raw.slice(raw.indexOf('\\n')+1));
   await writeFile(mock,`const original=globalThis.fetch;
 globalThis.fetch=async (url,opt)=>{if(!String(url).startsWith('https://fixture.invalid/'))return original(url,opt);
   if(Object.values(opt.headers).some(v=>String(v).includes('invalid-fixture-key')))return new Response('',{status:401});
-  const b=JSON.parse(opt.body),v=JSON.parse(b.messages.at(-1).content);
+  if(String(url).endsWith('/models'))return Response.json({data:[{id:'test-model'},{id:'second-model'}]});
+  const b=JSON.parse(opt.body),v=b.state??JSON.parse(b.messages.at(-1).content);
+  if(b.questions){
+    if(!b.questions.move.criteria.check && !b.questions.move.criteria.call)throw Error('Missing choice options');
+    return Response.json({answers:{move:{choice:v.legal.check?'check':'call'}}});
+  }
   if(v.players.some(p=>p.cards)||v.deck||v.seed)throw Error('Private state leaked');
   if(!v.tableClock||v.history.some(e=>e.type==='action'&&!Number.isFinite(e.responseSeconds)))throw Error('Missing public timing');
   const text=JSON.stringify({action:v.legal.check?'check':'call',amount:0,chat:'Test message'});
@@ -44,6 +49,23 @@ globalThis.fetch=async (url,opt)=>{if(!String(url).startsWith('https://fixture.i
   const complete=await until(id,'complete');assert.equal(complete.incidents.length,1);
   assert.ok(complete.events.filter(e=>e.type==='action').every(e=>Number.isFinite(e.responseSeconds)));
   assert.equal(await verify(complete),complete.events.length);
+  assert.equal(complete.betSizing,'shared-menu-v1');
+  assert.ok(complete.events.filter(e=>e.speaker==='Jev').every(e=>e.chat===''));
   const raw=await readFile(path.join(dir,'data',id+'.jsonl'),'utf8');assert.ok(!raw.includes('fixture-key'));
   await stop();await start();const reopened=await api('sessions/'+id);assert.deepEqual(reopened.events,complete.events);assert.equal(reopened.status,'complete');
+  // Change all five seats to API models, including the original Codex slot.
+  for(const [i,slot] of Object.keys(conf).entries()){
+    conf[slot]={name:'Lab '+(i+1),kind:'compatible',model:'second-model',url:'https://fixture.invalid/v1/chat/completions',key:'another-fixture-key'};
+  }
+  await api('config',conf);
+  const catalog=await api('models',{...conf.Astra,slot:'Astra',key:''});
+  assert.deepEqual(catalog.models,['second-model','test-model']);
+  const second=await api('sessions',{hands:1,stack:200,sb:5});
+  const changed=await until(second.id,'complete');
+  assert.deepEqual(changed.lineup,Object.values(conf).map(c=>c.name));
+  assert.equal(changed.models['Lab 1'].model,'second-model');
+  assert.equal(await verify(changed),changed.events.length);
+  conf.Astra.url='https://fixture.invalid/other/chat/completions';conf.Astra.key='';
+  const updated=await api('config',conf);
+  assert.equal(updated.players.Astra.hasKey,false);
 });
