@@ -256,7 +256,8 @@ async function boot(){
   if(!demo){demo=await simulate({seed:'river-room-opening-session-v1',id:openingId,created:new Date().toISOString()});await persist(demo);}
   session=demo;at=Math.max(0,demo.events.findIndex(e=>e.street==='Flop'&&e.type==='action'));render();$('#feed').scrollTop=$('#feed').scrollHeight;
   page=location.hash==='#archive'?'archive':'table';showPage();
-  if(knownCurrent){const s=await api('sessions/'+knownCurrent);if(['running','paused'].includes(s.status)&&page==='table')await pick(s,Math.max(0,s.events.length-1),true);}
+  if(knownCurrent){const s=await api('sessions/'+knownCurrent);if(['running','paused'].includes(s.status)&&page==='table'){await pick(s,Math.max(0,s.events.length-1),true);return;}}
+  if(local && location.hash==='#play')newDialog({role:'play',mode:'models',slot:NAMES.at(-1)});
 }
 window.addEventListener('beforeunload',e=>{if(practiceId){e.preventDefault();e.returnValue='';}});
 boot().catch(e=>notify('Unable to open the table: '+e.message));
