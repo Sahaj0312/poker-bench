@@ -1,12 +1,12 @@
 import {simulate,makeSeed,NAMES,VERSION} from './engine.js';
+import {symbol} from './seats.js';
 import {editLineup} from './lineup.js';
 import {icon,paintIcons} from './icons.js';
 import {save,list,verify,checkRecord} from './recordings.js';
 const $=s=>document.querySelector(s), all=s=>[...document.querySelectorAll(s)];
 const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
 const fmt=n=>Number(n||0).toLocaleString('en-US'), pad=n=>String(n).padStart(2,'0');
-const colors={Astra:'#c9b2ec',Opus:'#e5b49a',Muse:'#a7dfc9',Gemini:'#a0c2ec',Jev:'#e2c384'};
-const face=n=>'<img class="face" src="assets/'+(NAMES.includes(n)?n.toLowerCase():'astra')+'.webp" alt="">';
+const face=name=>symbol((session?.lineup??NAMES).indexOf(name));
 const responseTime=seconds=>seconds===0?'under 0.1 s':seconds.toFixed(1)+' s';
 const timingLabel=e=>Number.isFinite(e.responseSeconds)?responseTime(e.responseSeconds):'';
 const openingId='opening-table-v2';
@@ -32,22 +32,35 @@ function renderStage(e){
     let status=p.last||'In hand';
     if(Number.isFinite(p.lastResponseSeconds)) status+=' · '+responseTime(p.lastResponseSeconds);
     if(onClock) status='Acting · '+Math.max(0,Math.floor((Date.now()-session.turnStartedAt)/1000))+' s';
-    return '<div class="pod seat'+i+(p.folded?' folded':'')+(active?' acting':'')+'">'+face(p.name)+'<div class="info"><div class="playername">'+esc(p.name)+'</div><div class="stack">'+fmt(p.stack)+'</div></div><div class="hole">'+p.cards.map(c=>card(c,true)).join('')+'</div>'+(badge?'<span class="posbadge" title="Dealer / blind position">'+badge+'</span>':'')+'<span class="seatstatus">'+esc(status)+'</span></div>';
+    return `<div class="pod seat${i}${p.folded?' folded':''}${active?' acting':''}">
+      <div class="seatbody">${face(p.name)}<div class="info"><div class="playername" title="${esc(p.name)}">${esc(p.name)}</div><div class="stack">${fmt(p.stack)}</div></div>
+      <div class="hole">${p.cards.map(c=>card(c,true)).join('')}</div></div>
+      <div class="seatstatus">${badge?'<b class="posbadge">'+badge+'</b>':''}<span>${esc(status)}</span></div></div>`;
   }).join('');
-  $('#stage').innerHTML='<div class="handlabel">HAND '+pad(e.hand)+' / '+pad(session.rules.hands)+'</div><div class="stagestreet">'+esc(e.street)+'</div><div class="felt"><div class="feltin"></div></div><div class="centerboard"><div class="pot"><span class="chips"></span><small>'+(e.type==='result'?'AWARDED':'POT')+'</small>'+fmt(e.type==='result'?e.pots.filter(p=>!p.refund).reduce((s,p)=>s+p.amount,0):e.pot)+'</div><div class="boardcards">'+Array.from({length:5},(_,i)=>card(e.board[i])).join('')+'</div><div class="feltword">River Room</div></div>'+seats;
-  $('#blinds').textContent=fmt(session.rules.sb)+' / '+fmt(session.rules.sb*2);$('#atTable').textContent=e.players.filter(p=>p.cards.length).length;
+  const pot=e.type==='result'?e.pots.filter(p=>!p.refund).reduce((s,p)=>s+p.amount,0):e.pot;
+  $('#stage').innerHTML=`<div class="stagebar"><span class="stageid">${icon('table')} Table 01</span><span class="stageview">${icon('eye')} Spectator view</span></div>
+    <div class="felt" aria-hidden="true"><div class="feltin"></div></div>
+    <div class="centerboard"><div class="pot">${icon('layers')}<small>${e.type==='result'?'Awarded':'Pot'}</small><b>${fmt(pot)}</b></div>
+    <div class="boardcards">${Array.from({length:5},(_,i)=>card(e.board[i])).join('')}</div><div class="streetlabel">${esc(e.street)}</div></div>${seats}
+    <button id="audit" class="stageaudit">${icon('shield')} Fairness log</button>`;
+  $('#audit').onclick=auditDialog;
+  $('#handmetric').textContent=pad(e.hand)+' / '+pad(session.rules.hands);
+  $('#gameformat').textContent='No-limit Texas Hold’em · '+(session.rules.format==='duplicate'?'Duplicate deals':'Continuous stacks');
+  $('#blinds').textContent=fmt(session.rules.sb)+' / '+fmt(session.rules.sb*2);
+  $('#atTable').textContent=pad(e.players.filter(p=>p.cards.length).length);
+
 }
 function renderFeed(events){
   const feed=$('#feed'), wasAtEnd=feed.scrollHeight-feed.scrollTop-feed.clientHeight<30;
   const visible=feedType==='talk'?events.filter(e=>e.chat):events;
-  $('#chatcount').textContent=events.filter(e=>e.chat).length;
+  $('#chatcount').textContent=visible.length+(feedType==='talk'?' messages':' events');
   let previous='',html='';
   for(const e of visible.slice(-65)){
     const marker='Hand '+pad(e.hand)+' · '+e.street;
     if(marker!==previous){html+='<div class="feedsep">'+esc(marker)+'</div>';previous=marker;}
     const duration=timingLabel(e);
     if(feedType==='talk'){
-      html+='<div class="message">'+face(e.speaker)+'<div><div class="messagehead"><strong style="color:'+colors[e.speaker]+'">'+esc(e.speaker)+'</strong><small>'+(duration?duration+' · ':'')+'#'+pad(e.index+1)+'</small></div><div class="bubble">'+esc(e.chat)+'</div></div></div>';
+      html+='<div class="message">'+face(e.speaker)+'<div><div class="messagehead"><strong>'+esc(e.speaker)+'</strong><small>'+(duration?duration+' · ':'')+'#'+pad(e.index+1)+'</small></div><div class="bubble">'+esc(e.chat)+'</div></div></div>';
     }else{
       const shown=e.shown?.map(p=>esc(p.name)+' · '+esc(p.hand)).join(' / ');
       const pots=e.pots?.map((p,i)=>(p.refund?'Refund':i?'Side pot':'Main pot')+' '+fmt(p.amount)+' — '+p.winners.map(w=>esc(e.players[w].name)).join(', ')).join('<br>');
@@ -61,7 +74,7 @@ function renderFeed(events){
 function render(){
   if(!session?.events.length)return;
   const e=session.events[at], events=session.events.slice(0,at+1), total=session.events.length;
-  $('#modeTag').textContent=session.mode==='demo'?'DEMO':session.status==='running'?'LIVE':'MODEL RUN';
+  $('#modeTag').textContent=session.mode==='demo'?'Demo session':session.status==='running'?'Live session':'Model session';
   renderStage(e);renderFeed(events);
   const timed=session.version===VERSION;
   $('#feedclock').textContent=timed?(session.mode==='demo'?'Simulated move times':'Observed move times'):'Move times unavailable in this replay';
@@ -77,7 +90,12 @@ function render(){
   $('#play').innerHTML=icon(playing?'pause':'play');$('#play').setAttribute('aria-label',playing?'Pause replay':'Play replay');
   const delta=p=>session.rules.format==='duplicate'?(e.net[p.name]||0)+(e.type==='result'?0:p.stack-session.rules.stack):p.stack-session.rules.stack;
   $('#standingCaption').textContent=session.rules.format==='duplicate'?'Cumulative net chips':'Hand '+pad(e.hand)+' · Stack size';
-  $('#standings').innerHTML=[...e.players].sort((a,b)=>session.rules.format==='duplicate'?delta(b)-delta(a):b.stack-a.stack).map(p=>{const d=delta(p);return '<div class="standing">'+face(p.name)+'<div><strong>'+esc(p.name)+'</strong><small>'+esc(p.folded?p.cards.length?'Folded':'Out':'Seated')+'</small></div><div class="value">'+fmt(p.stack)+'<small class="'+(d<0?'loss':d>0?'plus':'')+'">'+(d>0?'+':'')+fmt(d)+'</small></div></div>';}).join('');
+  const order=[...e.players].sort((a,b)=>session.rules.format==='duplicate'?delta(b)-delta(a):b.stack-a.stack);
+  const maxStack=Math.max(1,...order.map(p=>p.stack));
+  $('#standings').innerHTML='<table><thead><tr><th>Rank</th><th>Player</th><th>Model</th><th>Last action</th><th class="num">Stack</th><th class="num">Net chips</th></tr></thead><tbody>'+order.map((p,i)=>{
+    const d=delta(p),model=session.models?.[p.name]?.model||'Demo policy';
+    return `<tr><td>${pad(i+1)}</td><td><span class="who">${face(p.name)}<strong>${esc(p.name)}</strong></span></td><td>${esc(model)}</td><td>${esc(p.last||'In hand')}</td><td class="num"><span class="stackbar"><b style="width:${100*p.stack/maxStack}%"></b></span>${fmt(p.stack)}</td><td class="num ${d>0?'gain':''}">${d>0?'+':''}${fmt(d)}</td></tr>`;
+  }).join('')+'</tbody></table>';
   $('#runstatus').innerHTML='';
   if(at===total-1 && session.status==='complete'){
     const results=events.filter(x=>x.type==='result');
@@ -135,12 +153,16 @@ async function renderArchive(){
   $('#archiveList').innerHTML=[...entries.values()].sort((a,b)=>b.created.localeCompare(a.created)).map(s=>'<button class="archiveitem" data-id="'+esc(s.id)+'">'+icon('replay')+'<div><span>'+esc(s.id===openingId?'Opening table':s.id==='opening-table'?'Opening table (original)':s.mode==='demo'?'Demo session':'Model session')+' · '+esc(s.rules.format==='duplicate'?'Duplicate deals':'No-limit Hold’em')+'</span><small>'+esc(stamp(s))+' · '+s.rules.hands+' hands scheduled · '+esc(s.status)+'</small></div>'+icon('chevron')+'</button>').join('');
   all('.archiveitem').forEach(b=>b.onclick=async()=>{try{let s=entries.get(b.dataset.id);if(!s.events)s=await api('sessions/'+s.id);await pick(s,0,local&&s.id===knownCurrent);}catch(e){notify(e.message);}});
 }
-function newDialog(){
+function newDialog(draft){
   modal('New session','<form id="newform"><div class="formgrid"><label class="field wide">Players<select name="mode"><option value="demo">Demo · five simulated players</option><option value="models">Live models · configured providers</option></select></label><label class="field wide">Game format<select name="format"><option value="session">Continuous stacks</option><option value="duplicate">Duplicate deals · five seat rotations</option></select></label><label class="field">Hands<input type="number" name="hands" value="12" min="1" max="100" required></label><label class="field">Starting stack<input type="number" name="stack" value="2000" min="10" max="1000000" required></label><label class="field">Small blind<input type="number" name="sb" value="10" min="1" required></label><label class="field">Big blind<input name="bb" value="20" readonly></label></div><p id="newnote" class="formnote"></p><p id="formerror" role="alert"></p><div class="formfoot"><button class="secondary" type="button" id="connections">Players</button><button class="primary" type="submit">Start session</button></div></form>');
   const form=$('#newform');
   const note=()=>{$('#newnote').textContent=(form.mode.value==='demo'?'Demo players share one seeded policy. ':local?'Each seat uses its saved model and provider. ':'Live model play runs in the local Poker Bench app. Open http://localhost:4395 after running npm start. ')+(form.format.value==='duplicate'?'Stacks and conversation reset every hand. Each five-hand block rotates one deal through every seat.':'Chips carry over between hands. The dealer button moves each hand.');};
+  if(draft?.mode)for(const name of ['mode','format','hands','stack','sb','bb'])form.elements[name].value=draft[name];
   form.mode.onchange=note;form.format.onchange=()=>{if(form.format.value==='duplicate')form.hands.value=Math.max(5,Math.ceil(Number(form.hands.value)/5)*5);note();};form.sb.oninput=()=>form.bb.value=Number(form.sb.value)*2;note();
-  $('#connections').onclick=configDialog;
+  $('#connections').onclick=()=>{
+    const draft=Object.fromEntries(new FormData(form));
+    configDialog(()=>newDialog(draft));
+  };
   form.onsubmit=async ev=>{ev.preventDefault();const btn=form.querySelector('[type=submit]');btn.disabled=true;$('#formerror').textContent='';
     try{const options={format:form.format.value,hands:Number(form.hands.value),stack:Number(form.stack.value),sb:Number(form.sb.value)};
       if(form.mode.value==='models'){
@@ -150,20 +172,20 @@ function newDialog(){
       }else{const s=await simulate({seed:makeSeed(),options});await persist(s);await pick(s);$('#dialog').close();startPlay();}
     }catch(e){$('#formerror').textContent=e.message;}finally{btn.disabled=false;}};
 }
-function configDialog(){
+function configDialog(afterSave){
   if(!local){
     modal('Model lineup','<div class="protocol"><p>Run Poker Bench on your computer to configure API keys and model IDs.</p><pre>git clone https://github.com/Sahaj0312/poker-bench.git\ncd poker-bench\nnpm start</pre><a href="http://localhost:4395">Open the local table</a></div>');
     return;
   }
-  editLineup({players,api,modal,onSave:updated=>{players=updated;$('#dialog').close();notify('Model lineup saved');}});
+  editLineup({players,api,modal,onSave:updated=>{players=updated;$('#dialog').close();notify('Model lineup saved');if(typeof afterSave==='function')afterSave();}});
 }
 function auditDialog(){
   const s=session;
   modal('Fairness log','<div class="protocol"><p>'+esc(s.mode==='demo'?'Demo recording. All five seats used the same simulated decision policy.':'Model recording. Each player received its own hole cards, public table state, and the same legal moves.')+'</p>'+(s.betSizing?'<h3>Raise sizes</h3><p>All seats can choose minimum, half-pot, pot, double-pot, or all-in raises when legal. TypeSafe seats play silently.</p>':'')+'<h3>Table clock</h3><p>'+esc(s.version!==VERSION?'This recording predates the table clock.':s.mode==='demo'?'Demo response times come from a reproducible simulation.':'The dealer times each successful request to a tenth of a second, including network and provider latency. Failed attempts and retry pauses are excluded. Recorded time is an observation supplied to replay verification.')+'</p><h3>Dealer protocol</h3><p>Seeded Fisher–Yates shuffle, randomized opening seats, fixed blinds, and an independent rules engine. The dealer commits to the seed before play.</p><h3>Game format</h3><p>'+esc(s.rules.format==='duplicate'?'Duplicate deals. Each block of five hands reuses one deal, rotates players, and resets stacks and chat.':'Continuous stacks. The button rotates and conversation carries between hands.')+'</p><h3>Seed commitment · SHA-256</h3><p><code>'+esc(s.commitment)+'</code></p><h3>Revealed seed</h3><p><code>'+esc(s.seed||'Available when the session ends')+'</code></p><h3>Players</h3><p>'+(s.lineup??NAMES).map(n=>esc(n)+' · '+esc(s.models?.[n]?.model||(s.mode==='demo'?'Demo policy v1':'Unspecified'))).join('<br>')+'</p><h3>Dealer version</h3><p><code>'+esc(s.version)+'</code></p>'+(s.incidents?.length?'<h3>Interrupted decisions</h3><p>'+s.incidents.map(x=>esc(x.error)).join('<br>')+'</p>':'')+'<p id="verification" role="status"></p><div class="formfoot"><button class="primary" id="verify" '+(s.status==='complete'?'':'disabled')+'>Verify replay</button></div></div>');
   $('#verify').onclick=async ev=>{ev.target.disabled=true;try{$('#verification').textContent='Verified '+await verify(s)+' events from the revealed seed and recorded moves.';}catch(e){$('#verification').textContent=e.message;}finally{ev.target.disabled=false;}};
 }
-function exportSession(){const url=URL.createObjectURL(new Blob([JSON.stringify(session)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='river-room-'+session.id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);}
-paintIcons();$('#settings').onclick=configDialog;$('#new').onclick=newDialog;$('#close').onclick=()=>$('#dialog').close();$('#audit').onclick=auditDialog;$('#download').onclick=exportSession;$('#speed').onchange=tick;
+function exportSession(){const url=URL.createObjectURL(new Blob([JSON.stringify(session)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='poker-bench-'+session.id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);}
+paintIcons();$('#settings').onclick=configDialog;$('#new').onclick=newDialog;$('#close').onclick=()=>$('#dialog').close();$('#download').onclick=exportSession;$('#speed').onchange=tick;
 $('#play').onclick=()=>{if(playing){stopPlay();render();}else startPlay();};
 $('#back').onclick=()=>seek(at-1);$('#forward').onclick=()=>seek(at+1);$('#timeline').oninput=e=>seek(Number(e.target.value));
 all('[data-feed]').forEach(b=>b.onclick=()=>{feedType=b.dataset.feed;render();$('#feed').scrollTop=$('#feed').scrollHeight;});

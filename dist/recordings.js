@@ -15,7 +15,7 @@ async function dbOp(mode,action){
 export const save=s=>dbOp('readwrite',store=>store.put(s));
 export const list=()=>dbOp('readonly',store=>store.getAll());
 export function checkRecord(s){
-  if(![VERSION,LEGACY_VERSION].includes(s?.version)||!Array.isArray(s.events)||s.events.length<1||s.events.length>100000||typeof s.id!=='string'||typeof s.commitment!=='string'||!['demo','models'].includes(s.mode))throw Error('Unrecognized River Room replay.');
+  if(![VERSION,LEGACY_VERSION].includes(s?.version)||!Array.isArray(s.events)||s.events.length<1||s.events.length>100000||typeof s.id!=='string'||typeof s.commitment!=='string'||!['demo','models'].includes(s.mode))throw Error('Unrecognized poker replay.');
   defaults(s.rules);
   const names=checkLineup(s.lineup??NAMES);
   const validCards=a=>Array.isArray(a)&&a.every(c=>typeof c==='string'&&/^[2-9TJQKA][shdc]$/.test(c));
