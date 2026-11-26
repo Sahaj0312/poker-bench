@@ -25,6 +25,7 @@ globalThis.fetch=async (url,opt)=>{if(!String(url).startsWith('https://fixture.i
   if(Object.values(opt.headers).some(v=>String(v).includes('invalid-fixture-key')))return new Response('',{status:401});
   const b=JSON.parse(opt.body),v=JSON.parse(b.messages.at(-1).content);
   if(v.players.some(p=>p.cards)||v.deck||v.seed)throw Error('Private state leaked');
+  if(!v.tableClock||v.history.some(e=>e.type==='action'&&!Number.isFinite(e.responseSeconds)))throw Error('Missing public timing');
   const text=JSON.stringify({action:v.legal.check?'check':'call',amount:0,chat:'Test message'});
   return Response.json(b.system?{content:[{type:'text',text}]}:{choices:[{message:{content:text}}]});};`);
   let server;
@@ -41,6 +42,7 @@ globalThis.fetch=async (url,opt)=>{if(!String(url).startsWith('https://fixture.i
   const paused=await until(id,'paused');assert.equal(paused.waitingFor,'Opus');assert.ok(!paused.seed);
   conf.Opus.key='fresh-fixture-key';await api('config',conf);await api('sessions/'+id+'/retry',{});
   const complete=await until(id,'complete');assert.equal(complete.incidents.length,1);
+  assert.ok(complete.events.filter(e=>e.type==='action').every(e=>Number.isFinite(e.responseSeconds)));
   assert.equal(await verify(complete),complete.events.length);
   const raw=await readFile(path.join(dir,'data',id+'.jsonl'),'utf8');assert.ok(!raw.includes('fixture-key'));
   await stop();await start();const reopened=await api('sessions/'+id);assert.deepEqual(reopened.events,complete.events);assert.equal(reopened.status,'complete');

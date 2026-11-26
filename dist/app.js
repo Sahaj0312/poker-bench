@@ -6,6 +6,9 @@ const esc=v=>String(v??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&
 const fmt=n=>Number(n||0).toLocaleString('en-US'), pad=n=>String(n).padStart(2,'0');
 const colors={Astra:'#c9b2ec',Opus:'#e5b49a',Muse:'#a7dfc9',Gemini:'#a0c2ec',Jev:'#e2c384'};
 const face=n=>'<img class="face" src="assets/'+(NAMES.includes(n)?n.toLowerCase():'astra')+'.webp" alt="">';
+const responseTime=seconds=>seconds===0?'under 0.1 s':seconds.toFixed(1)+' s';
+const timingLabel=e=>Number.isFinite(e.responseSeconds)?responseTime(e.responseSeconds):'';
+const openingId='opening-table-v2';
 const suit={s:'♠',h:'♥',d:'♦',c:'♣'};
 let session,at=0,playing=false,timer,pollTimer,follow=true,feedType='talk',local=false,players={},page='table',generation=0,library=new Map(),noticeTimer;
 let knownCurrent=null;
@@ -23,7 +26,12 @@ function card(c,mini=false){
 function renderStage(e){
   const seats=e.players.map((p,i)=>{
     const badge=[i===e.button?'D':'',i===e.small?'SB':'',i===e.big?'BB':''].filter(Boolean).join('/');
-    return '<div class="pod seat'+i+(p.folded?' folded':'')+(e.seat===i?' acting':'')+'">'+face(p.name)+'<div class="info"><div class="playername">'+esc(p.name)+'</div><div class="stack">'+fmt(p.stack)+'</div></div><div class="hole">'+p.cards.map(c=>card(c,true)).join('')+'</div>'+(badge?'<span class="posbadge" title="Dealer / blind position">'+badge+'</span>':'')+'<span class="seatstatus">'+esc(p.last||'In hand')+'</span></div>';
+    const onClock=follow && at===session.events.length-1 && session.status==='running' && session.waitingFor===p.name && session.turnStartedAt;
+    const active=follow && session.status==='running'?onClock:e.seat===i;
+    let status=p.last||'In hand';
+    if(Number.isFinite(p.lastResponseSeconds)) status+=' · '+responseTime(p.lastResponseSeconds);
+    if(onClock) status='Acting · '+Math.max(0,Math.floor((Date.now()-session.turnStartedAt)/1000))+' s';
+    return '<div class="pod seat'+i+(p.folded?' folded':'')+(active?' acting':'')+'">'+face(p.name)+'<div class="info"><div class="playername">'+esc(p.name)+'</div><div class="stack">'+fmt(p.stack)+'</div></div><div class="hole">'+p.cards.map(c=>card(c,true)).join('')+'</div>'+(badge?'<span class="posbadge" title="Dealer / blind position">'+badge+'</span>':'')+'<span class="seatstatus">'+esc(status)+'</span></div>';
   }).join('');
   $('#stage').innerHTML='<div class="handlabel">HAND '+pad(e.hand)+' / '+pad(session.rules.hands)+'</div><div class="stagestreet">'+esc(e.street)+'</div><div class="felt"><div class="feltin"></div></div><div class="centerboard"><div class="pot"><span class="chips"></span><small>'+(e.type==='result'?'AWARDED':'POT')+'</small>'+fmt(e.type==='result'?e.pots.filter(p=>!p.refund).reduce((s,p)=>s+p.amount,0):e.pot)+'</div><div class="boardcards">'+Array.from({length:5},(_,i)=>card(e.board[i])).join('')+'</div><div class="feltword">River Room</div></div>'+seats;
   $('#blinds').textContent=fmt(session.rules.sb)+' / '+fmt(session.rules.sb*2);$('#atTable').textContent=e.players.filter(p=>p.cards.length).length;
@@ -36,12 +44,13 @@ function renderFeed(events){
   for(const e of visible.slice(-65)){
     const marker='Hand '+pad(e.hand)+' · '+e.street;
     if(marker!==previous){html+='<div class="feedsep">'+esc(marker)+'</div>';previous=marker;}
+    const duration=timingLabel(e);
     if(feedType==='talk'){
-      html+='<div class="message">'+face(e.speaker)+'<div><div class="messagehead"><strong style="color:'+colors[e.speaker]+'">'+esc(e.speaker)+'</strong><small>#'+pad(e.index+1)+'</small></div><div class="bubble">'+esc(e.chat)+'</div></div></div>';
+      html+='<div class="message">'+face(e.speaker)+'<div><div class="messagehead"><strong style="color:'+colors[e.speaker]+'">'+esc(e.speaker)+'</strong><small>'+(duration?duration+' · ':'')+'#'+pad(e.index+1)+'</small></div><div class="bubble">'+esc(e.chat)+'</div></div></div>';
     }else{
       const shown=e.shown?.map(p=>esc(p.name)+' · '+esc(p.hand)).join(' / ');
       const pots=e.pots?.map((p,i)=>(p.refund?'Refund':i?'Side pot':'Main pot')+' '+fmt(p.amount)+' — '+p.winners.map(w=>esc(e.players[w].name)).join(', ')).join('<br>');
-      html+='<div class="actionline"><small>EVENT '+pad(e.index+1)+'</small>'+esc(e.text)+(shown?'<br>'+shown:'')+(pots?'<br>'+pots:'')+'</div>';
+      html+='<div class="actionline"><small>EVENT '+pad(e.index+1)+(duration?' · '+duration:'')+'</small>'+esc(e.text)+(shown?'<br>'+shown:'')+(pots?'<br>'+pots:'')+'</div>';
     }
   }
   feed.innerHTML=html||'<p class="emptymsg">Waiting for the first table comment.</p>';
@@ -53,6 +62,10 @@ function render(){
   const e=session.events[at], events=session.events.slice(0,at+1), total=session.events.length;
   $('#modeTag').textContent=session.mode==='demo'?'DEMO':session.status==='running'?'LIVE':'MODEL RUN';
   renderStage(e);renderFeed(events);
+  const timed=session.version===VERSION;
+  $('#feedclock').textContent=timed?(session.mode==='demo'?'Simulated move times':'Observed move times'):'Move times unavailable in this replay';
+  const tablePace=$('#speed option[value="table"]');tablePace.disabled=!timed;
+  if(!timed && $('#speed').value==='table')$('#speed').value='1';
   $('#eventcount').textContent='EVENT '+pad(at+1)+' / '+pad(total);
   const range=$('#timeline');range.max=total-1;range.value=at;range.style.setProperty('--progress',((at/(total-1)||0)*100)+'%');
   const hands=session.events.filter(x=>x.type==='deal');
@@ -85,7 +98,15 @@ function render(){
 }
 function stopPlay(){playing=false;clearTimeout(timer);}
 function seek(pos){stopPlay();follow=false;at=Math.min(Math.max(0,pos),session.events.length-1);render();}
-function tick(){clearTimeout(timer);if(!playing)return;timer=setTimeout(()=>{if(at>=session.events.length-1){stopPlay();render();return;}at++;render();tick();},1500/Number($('#speed').value));}
+function tick(){
+  clearTimeout(timer);
+  if(!playing)return;
+  const next=session.events[at+1];
+  if(!next){stopPlay();render();return;}
+  const speed=$('#speed').value;
+  const delay=speed==='table'?(next.responseSeconds??0.4)*1000:1500/Number(speed);
+  timer=setTimeout(()=>{at++;render();tick();},delay);
+}
 function startPlay(){if(at===session.events.length-1)at=0;playing=true;follow=false;render();tick();}
 function modal(title,html){$('#dialogtitle').textContent=title;$('#dialogbody').innerHTML=html;if(!$('#dialog').open)$('#dialog').showModal();}
 function stamp(s){return new Date(s.created).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}
@@ -97,7 +118,7 @@ async function poll(gen){
   try{
     const delta=await api('sessions/'+session.id+'?from='+session.events.length);
     if(gen!==generation)return;
-    const {events,...meta}=delta;Object.assign(session,meta);session.events.push(...events);
+    const {events,...meta}=delta;Object.assign(session,{turnStartedAt:null,waitingFor:null},meta);session.events.push(...events);
     if(follow)at=Math.max(0,session.events.length-1);
     render();
     if(!['running','paused'].includes(session.status)){await persist(session);return;}
@@ -110,7 +131,7 @@ function showPage(){const archive=page==='archive';$('#archivePage').hidden=!arc
 async function renderArchive(){
   const entries=new Map(library);
   if(local){try{for(const s of await api('sessions'))entries.set(s.id,s);}catch{notify('Local session list unavailable');}}
-  $('#archiveList').innerHTML=[...entries.values()].sort((a,b)=>b.created.localeCompare(a.created)).map(s=>'<button class="archiveitem" data-id="'+esc(s.id)+'">'+icon('replay')+'<div><span>'+esc(s.id==='opening-table'?'Opening table':s.mode==='demo'?'Demo session':'Model session')+' · '+esc(s.rules.format==='duplicate'?'Duplicate deals':'No-limit Hold’em')+'</span><small>'+esc(stamp(s))+' · '+s.rules.hands+' hands scheduled · '+esc(s.status)+'</small></div>'+icon('chevron')+'</button>').join('');
+  $('#archiveList').innerHTML=[...entries.values()].sort((a,b)=>b.created.localeCompare(a.created)).map(s=>'<button class="archiveitem" data-id="'+esc(s.id)+'">'+icon('replay')+'<div><span>'+esc(s.id===openingId?'Opening table':s.id==='opening-table'?'Opening table (original)':s.mode==='demo'?'Demo session':'Model session')+' · '+esc(s.rules.format==='duplicate'?'Duplicate deals':'No-limit Hold’em')+'</span><small>'+esc(stamp(s))+' · '+s.rules.hands+' hands scheduled · '+esc(s.status)+'</small></div>'+icon('chevron')+'</button>').join('');
   all('.archiveitem').forEach(b=>b.onclick=async()=>{try{let s=entries.get(b.dataset.id);if(!s.events)s=await api('sessions/'+s.id);await pick(s,0,local&&s.id===knownCurrent);}catch(e){notify(e.message);}});
 }
 function newDialog(){
@@ -136,7 +157,7 @@ function configDialog(){
 }
 function auditDialog(){
   const s=session;
-  modal('Fairness log','<div class="protocol"><p>'+esc(s.mode==='demo'?'Demo recording. All five seats used the same simulated decision policy.':'Model recording. Each player received its own hole cards, public table state, and the same decision instructions.')+'</p><h3>Dealer protocol</h3><p>Seeded Fisher–Yates shuffle, randomized opening seats, fixed blinds, and an independent rules engine. The dealer commits to the seed before play.</p><h3>Game format</h3><p>'+esc(s.rules.format==='duplicate'?'Duplicate deals. Each block of five hands reuses one deal, rotates players, and resets stacks and chat.':'Continuous stacks. The button rotates and conversation carries between hands.')+'</p><h3>Seed commitment · SHA-256</h3><p><code>'+esc(s.commitment)+'</code></p><h3>Revealed seed</h3><p><code>'+esc(s.seed||'Available when the session ends')+'</code></p><h3>Players</h3><p>'+NAMES.map(n=>esc(n)+' · '+esc(s.models?.[n]?.model||(s.mode==='demo'?'Demo policy v1':'Unspecified'))).join('<br>')+'</p><h3>Dealer version</h3><p><code>'+esc(VERSION)+'</code></p>'+(s.incidents?.length?'<h3>Interrupted decisions</h3><p>'+s.incidents.map(x=>esc(x.error)).join('<br>')+'</p>':'')+'<p id="verification" role="status"></p><div class="formfoot"><button class="primary" id="verify" '+(s.status==='complete'?'':'disabled')+'>Verify replay</button></div></div>');
+  modal('Fairness log','<div class="protocol"><p>'+esc(s.mode==='demo'?'Demo recording. All five seats used the same simulated decision policy.':'Model recording. Each player received its own hole cards, public table state, and the same decision instructions.')+'</p><h3>Table clock</h3><p>'+esc(s.version!==VERSION?'This recording predates the table clock.':s.mode==='demo'?'Demo response times come from a reproducible simulation.':'The dealer times each successful request to a tenth of a second, including network and provider latency. Failed attempts and retry pauses are excluded. Recorded time is an observation supplied to replay verification.')+'</p><h3>Dealer protocol</h3><p>Seeded Fisher–Yates shuffle, randomized opening seats, fixed blinds, and an independent rules engine. The dealer commits to the seed before play.</p><h3>Game format</h3><p>'+esc(s.rules.format==='duplicate'?'Duplicate deals. Each block of five hands reuses one deal, rotates players, and resets stacks and chat.':'Continuous stacks. The button rotates and conversation carries between hands.')+'</p><h3>Seed commitment · SHA-256</h3><p><code>'+esc(s.commitment)+'</code></p><h3>Revealed seed</h3><p><code>'+esc(s.seed||'Available when the session ends')+'</code></p><h3>Players</h3><p>'+NAMES.map(n=>esc(n)+' · '+esc(s.models?.[n]?.model||(s.mode==='demo'?'Demo policy v1':'Unspecified'))).join('<br>')+'</p><h3>Dealer version</h3><p><code>'+esc(s.version)+'</code></p>'+(s.incidents?.length?'<h3>Interrupted decisions</h3><p>'+s.incidents.map(x=>esc(x.error)).join('<br>')+'</p>':'')+'<p id="verification" role="status"></p><div class="formfoot"><button class="primary" id="verify" '+(s.status==='complete'?'':'disabled')+'>Verify replay</button></div></div>');
   $('#verify').onclick=async ev=>{ev.target.disabled=true;try{$('#verification').textContent='Verified '+await verify(s)+' events from the revealed seed and recorded moves.';}catch(e){$('#verification').textContent=e.message;}finally{ev.target.disabled=false;}};
 }
 function exportSession(){const url=URL.createObjectURL(new Blob([JSON.stringify(session)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='river-room-'+session.id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);}
@@ -151,8 +172,8 @@ document.addEventListener('keydown',e=>{if($('#dialog').open||page!=='table'||['
 async function boot(){
   if(['localhost','127.0.0.1'].includes(location.hostname)){try{const data=await api('config');players=data.players;knownCurrent=data.current;local=true;}catch{}}
   try{for(const s of await list())library.set(s.id,s);}catch{}
-  let demo=library.get('opening-table');
-  if(!demo){demo=await simulate({seed:'river-room-opening-session-v1',id:'opening-table',created:new Date().toISOString()});await persist(demo);}
+  let demo=library.get(openingId);
+  if(!demo){demo=await simulate({seed:'river-room-opening-session-v1',id:openingId,created:new Date().toISOString()});await persist(demo);}
   session=demo;at=Math.max(0,demo.events.findIndex(e=>e.street==='Flop'&&e.type==='action'));render();$('#feed').scrollTop=$('#feed').scrollHeight;
   page=location.hash==='#archive'?'archive':'table';showPage();
   if(knownCurrent){const s=await api('sessions/'+knownCurrent);if(['running','paused'].includes(s.status)&&page==='table')await pick(s,Math.max(0,s.events.length-1),true);}

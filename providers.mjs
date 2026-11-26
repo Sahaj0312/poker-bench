@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { SYSTEM, validateMove } from './dist/engine.js';
+import { SYSTEM, TURN_LIMIT_SECONDS, validateMove } from './dist/engine.js';
 
 export const baseConfig = {
   Astra:{kind:'codex',model:'gpt-6.2-astra',url:''},
@@ -46,7 +46,7 @@ export async function fromCodex(model,view,signal) {
   }finally{await rm(dir,{recursive:true,force:true});}
 }
 export async function providerMove(config,view,stopSignal) {
-  const signal=AbortSignal.any([stopSignal,AbortSignal.timeout(120000)]);
+  const signal=AbortSignal.any([stopSignal,AbortSignal.timeout(TURN_LIMIT_SECONDS*1000)]);
   if(config.kind==='codex')return validateMove(await fromCodex(config.model,view,signal),view.legal);
   const anthropic=config.kind==='anthropic';
   const messages=[{role:'user',content:JSON.stringify(view)}];

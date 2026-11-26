@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import {best,handName,distribute,legalFor,validateMove,simulate,deckFor,viewFor,NAMES,demoPolicy,digest} from '../dist/engine.js';
+import {best,handName,distribute,legalFor,validateMove,simulate,deckFor,viewFor,NAMES,demoPolicy,digest,LEGACY_VERSION} from '../dist/engine.js';
 import {verify} from '../dist/recordings.js';
 const cards=s=>s.split(' ');
 test('showdown ranks every hand class, low ace straights, kickers, and board ties',()=>{
@@ -71,4 +71,51 @@ test('randomized legal games conserve every chip and never duplicate a card',asy
 test('wholesale all-ins run the full board without asking for empty actions',async()=>{
   let turns=0;const s=await simulate({seed:'all-in',options:{hands:1},decide:async v=>{turns++;return v.legal.raise?{action:'raise',amount:v.legal.raise.max,chat:''}:{action:'call',amount:0,chat:''};}});
   assert.equal(turns,5);assert.equal(s.events.at(-1).board.length,5);assert.equal(s.events.at(-1).shown.length,5);
+});
+test('every seat sees the full observed history, its own prior hands and only public reveals',async()=>{
+  const actions=[],deals=[],foldedByHand=new Map(),observedBy=new Set();let clock=0;
+  const session=await simulate({seed:'online-observations',mode:'models',options:{hands:7},now:()=>clock,
+    onEvent:e=>{
+      if(e.type==='action'){actions.push([e.speaker,e.responseSeconds]);assert.equal(e.responseSeconds,2.4);}
+      if(e.type==='deal')deals.push(e);
+    },
+    decide:async(v,restartClock)=>{
+      observedBy.add(v.name);
+      assert.deepEqual(v.history.filter(e=>e.type==='action').map(e=>[e.speaker,e.responseSeconds]),actions);
+      assert.deepEqual(v.ownPastHands,deals.slice(0,-1).map(e=>({hand:e.hand,cards:e.players.find(p=>p.name===v.name).cards})));
+      assert.deepEqual(v.cards,deals.at(-1).players[v.seat].cards);
+      assert.ok(v.players.every(p=>!('cards' in p)));
+      for(const e of v.history){
+        if(e.type==='board')assert.ok(e.board.length>=3);
+        if(e.type==='deal')assert.ok(e.startingStacks.every(p=>!('cards' in p)));
+        if(e.type==='result'){
+          assert.equal(e.shown.length,4);
+          assert.ok(e.shown.every(p=>p.name!==foldedByHand.get(e.hand)));
+        }
+      }
+      clock+=65000; // A failed attempt and operator pause.
+      restartClock();clock+=2430;
+      let action=v.legal.check?'check':'call';
+      if(!foldedByHand.has(v.hand)&&v.legal.fold){action='fold';foldedByHand.set(v.hand,v.name);}
+      return {action,amount:0,chat:'',responseSeconds:9000};
+    }
+  });
+  assert.equal(observedBy.size,5);assert.ok(actions.length>80);
+  assert.equal(await verify(session),session.events.length);
+  delete session.events.find(e=>e.type==='action').responseSeconds;
+  await assert.rejects(verify(session),/Invalid response time/);
+});
+test('duplicate deals clear timing and private-card memory before the next rotation',async()=>{
+  await simulate({seed:'reset-clocks',options:{hands:5,format:'duplicate'},decide:async v=>{
+    assert.ok(v.history.every(e=>e.hand===v.hand));
+    assert.deepEqual(v.ownPastHands,[]);
+    if(!v.history.some(e=>e.type==='action'))assert.ok(v.players.every(p=>!('lastResponseSeconds' in p)));
+    return {action:v.legal.check?'check':'call',amount:0,chat:''};
+  }});
+});
+test('original recordings still reconstruct exactly without inventing timing',async()=>{
+  const s=await simulate({version:LEGACY_VERSION,seed:'prior-format',options:{hands:1}});
+  assert.equal(await digest(JSON.stringify(s.events)),'4df14eb38bc7da6190ffeba52e5a5634ac7cb317167b99c2d155eb9716558184');
+  assert.equal(await verify(s),s.events.length);
+  assert.ok(!s.events.some(e=>'responseSeconds' in e));
 });

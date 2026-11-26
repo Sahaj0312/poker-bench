@@ -33,13 +33,16 @@ async function run(options,players){
   task=simulate({id,seed,options,mode:'models',models,
     onStart:async session=>{current=session;await append(id,{meta:{...session,events:[]}});ready();},
     onEvent:async event=>{await append(id,{event});},
-    decide:async view=>{
+    decide:async (view,restartClock)=>{
       for(;;){
         stop.signal.throwIfAborted();current.status='running';current.waitingFor=view.name;delete current.error;
         try{
           const frozen=players[view.name], updated=config()[view.name];
           const seatConfig=updated.url===frozen.url?{...frozen,key:updated.key}:frozen;
-          return await providerMove(seatConfig,view,stop.signal);
+          current.turnStartedAt=Date.now();
+          restartClock();
+          try{return await providerMove(seatConfig,view,stop.signal);}
+          finally{delete current.turnStartedAt;}
         }catch(e){
           stop.signal.throwIfAborted();
           current.status='paused';current.error=view.name+' — '+(e instanceof SyntaxError?'Provider returned invalid JSON.':e.message);
