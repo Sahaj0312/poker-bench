@@ -37,30 +37,45 @@ function card(c,mini=false){
   return '<span aria-label="'+rank+' of '+({s:'spades',h:'hearts',d:'diamonds',c:'clubs'})[c[1]]+'" class="card '+('hd'.includes(c[1])?'red':'')+'">'+content+'</span>';
 }
 function renderStage(e){
+  const ready=session.status==='ready';
+  const owner=session.mySeat || (!session.privateTable && session.humanName);
+  const ownIndex=e.players.findIndex(p=>p.name===owner);
   const seats=e.players.map((p,i)=>{
-    const badge=[i===e.button?'D':'',i===e.small?'SB':'',i===e.big?'BB':''].filter(Boolean).join('/');
+    const position=ownIndex<0?i:(i-ownIndex+8)%5;
+    const own=p.name===owner;
     const onClock=follow && at===session.events.length-1 && session.status==='running' && session.waitingFor===p.name && session.turnStartedAt;
     const active=follow && session.status==='running'?onClock:e.seat===i;
-    let status=p.last||'In hand';
-    if(Number.isFinite(p.lastResponseSeconds)) status+=' · '+responseTime(p.lastResponseSeconds);
-    if(onClock) status='Acting · '+Math.max(0,Math.floor((Date.now()-session.turnStartedAt)/1000))+' s';
-    return `<div class="pod seat${i}${p.folded?' folded':''}${active?' acting':''}">
-      ${chipPile(p.stack,session.rules.stack)}<div class="seatbody">${face(p.name)}<div class="info"><div class="playername" title="${esc(p.name)}">${esc(p.name)}</div><div class="stack">${fmt(p.stack)}</div></div>
-      <div class="hole">${(p.hiddenCount?Array(p.hiddenCount).fill(null):p.cards).map(c=>card(c,true)).join('')}</div></div>
-      <div class="seatstatus">${badge?'<b class="posbadge">'+badge+'</b>':''}<span>${esc(status)}</span></div></div>`;
+    const winner=e.type==='result' && e.pots.some(pot=>!pot.refund && pot.winners.includes(i));
+    const index=session.lineup?.indexOf(p.name)??i;
+    const badge=[i===e.button?'D':'',i===e.small?'SB':'',i===e.big?'BB':''].filter(Boolean).join('/');
+    let status=p.last || (ready?'':'In hand');
+    if((p.last==='Small blind'||p.last==='Big blind') && p.streetBet)status+=' '+fmt(p.streetBet);
+    if(Number.isFinite(p.lastResponseSeconds))status+=' · '+responseTime(p.lastResponseSeconds);
+    if(onClock)status=(own?'Your turn':'Thinking')+' · '+Math.max(0,Math.floor((Date.now()-session.turnStartedAt)/1000))+' s';
+    const cards=p.hiddenCount?Array(p.hiddenCount).fill(null):p.cards;
+    return `<div class="pod seat${position}${own?' hero':''}${p.folded?' folded':''}${active?' acting':''}${winner?' winner':''}">
+      <img class="avatar" src="assets/player-${index<0?i:index}.webp" alt="">
+      <div class="hole">${cards.map(c=>card(c,true)).join('')}</div>
+      <div class="seatplate"><div class="playername" title="${esc(p.name)}">${esc(p.name)}</div><div class="stack">${fmt(p.stack)}</div>
+      ${badge?'<b class="position-tag">'+badge+'</b>':''}</div>
+      ${status?'<div class="seatstatus">'+esc(status)+'</div>':''}
+      ${chipPile(p.stack,session.rules.stack)}</div>`;
   }).join('');
   const pot=e.type==='result'?e.pots.filter(p=>!p.refund).reduce((s,p)=>s+p.amount,0):e.pot;
-  $('#stage').innerHTML=`<div class="stagebar"><span class="stageid">${icon('table')} Table 01</span><span class="stageview">${icon('eye')} ${session.privateTable?(session.mySeat?'Your seat · '+esc(session.mySeat):'Public view'):'Spectator view'}</span></div>
+  $('#stage').innerHTML=`<div class="stagebar"><span class="stageid">${icon('spade')} Table 01</span><span class="stageview">${icon(owner?'people':'eye')} ${session.mySeat?'Player view':session.privateTable?'Public view':'Spectator view'}</span></div>
     <div class="felt" aria-hidden="true"></div>
-    <div class="centerboard"><div class="pot">${e.type==='result'?'':chipPile(e.pot,session.rules.stack)}<small>${e.type==='result'?'Awarded':'Pot'}</small><b>${fmt(pot)}</b></div>
-    <div class="boardcards">${Array.from({length:5},(_,i)=>card(e.board[i])).join('')}</div><div class="streetlabel">${esc(e.street)}</div></div>${seats}
-    <button id="audit" class="stageaudit">${icon('shield')} Fairness log</button>`;
-  $('#audit').onclick=auditDialog;
-  $('#handmetric').textContent=pad(e.hand)+' / '+pad(session.rules.hands);
-  $('#gameformat').textContent='No-limit Texas Hold’em · '+(session.rules.format==='duplicate'?'Duplicate deals':'Continuous stacks');
+    <div class="centerboard"><div class="feltmark" aria-hidden="true">Poker Bench</div>
+    ${ready?'<div class="streetlabel">Waiting for the deal</div>':`<div class="pot">${e.type==='result'?'':chipPile(e.pot,session.rules.stack)}<small>${e.type==='result'?'Awarded':'Total pot'}</small><b>${fmt(pot)}</b></div>
+    <div class="boardcards">${Array.from({length:5},(_,i)=>card(e.board[i])).join('')}</div><div class="streetlabel">${esc(e.street)}</div>`}</div>${seats}
+    ${ready?'':`<button id="audit" class="stageaudit">${icon('shield')} Fairness log</button>`}`;
+  if(!ready)$('#audit').onclick=auditDialog;
+  $('#handmetric').textContent=(ready?'0':e.hand)+' / '+session.rules.hands;
+  $('#gameformat').textContent=session.rules.format==='duplicate'?'Duplicate deals':'Continuous stacks';
   $('#blinds').textContent=fmt(session.rules.sb)+' / '+fmt(session.rules.sb*2);
-  $('#atTable').textContent=pad(e.players.filter(p=>p.cards.length||p.hiddenCount).length);
-
+  $('#atTable').textContent=ready?'5':String(e.players.filter(p=>p.cards.length||p.hiddenCount).length);
+  $('.feedtabs').hidden=ready;
+  $('#roomSeats').hidden=!ready;
+  if(ready)$('#roomSeats').innerHTML='<h3>Lineup</h3>'+e.players.map((p,i)=>`<div><img src="assets/player-${i}.webp" alt=""><span><strong>${esc(p.name)}</strong><small>${esc(session.models[p.name])}</small></span></div>`).join('');
 }
 function renderFeed(events){
   const feed=$('#feed'), wasAtEnd=feed.scrollHeight-feed.scrollTop-feed.clientHeight<30;
@@ -86,6 +101,12 @@ function renderFeed(events){
 function render(){
   if(!session?.events.length)return;
   const e=session.events[at], events=session.events.slice(0,at+1), total=session.events.length;
+  $('#seatEntry').hidden=true;
+  $('.ledger').hidden=false;$('#replayPanel').hidden=false;
+  if($('#replayPanel').dataset.session!==session.id){
+    $('#replayPanel').open=!(session.mySeat && session.status==='running');
+    $('#replayPanel').dataset.session=session.id;
+  }
   $('#modeTag').textContent=sessionLabel(session);
   $('#download').disabled=!!session.privateTable;
   renderDecision($('#decision'),session,follow && at===total-1,async payload=>{
@@ -126,7 +147,7 @@ function render(){
     $('#bigpot').onclick=()=>seek(biggest.index);
   }
   if(['running','paused'].includes(session.status)&&(knownCurrent===session.id||practiceId===session.id)){
-    const box=document.createElement('div');box.className='noticebox';box.textContent=session.status==='paused'?'Session paused. '+session.error:session.mySeat===session.waitingFor && session.mySeat?'Your turn. Choose a move at the table.':sessionLabel(session)+' · '+(session.waitingFor||'Dealer')+' is acting.';
+    const box=document.createElement('div');box.className='noticebox';box.textContent=session.status==='paused'?'Session paused. '+session.error:session.mySeat && follow?'':sessionLabel(session)+' · '+(session.waitingFor||'Dealer')+' is acting.';
     const add=(text,fn)=>{const b=document.createElement('button');b.textContent=text;b.onclick=fn;box.append(b);};
     if(session.status==='paused' && (!session.privateTable || session.mySeat))add('Retry turn',()=>control('retry'));
     if(!follow)add('Follow live',()=>{stopPlay();follow=true;at=session.events.length-1;render();});
@@ -178,6 +199,25 @@ async function renderArchive(){
   $('#archiveList').innerHTML=[...entries.values()].sort((a,b)=>b.created.localeCompare(a.created)).map(s=>'<button class="archiveitem" data-id="'+esc(s.id)+'">'+icon('replay')+'<div><span>'+esc(s.id===openingId?'Opening table':s.id==='opening-table'?'Opening table (original)':sessionLabel(s))+' · '+esc(s.rules.format==='duplicate'?'Duplicate deals':'No-limit Hold’em')+'</span><small>'+esc(stamp(s))+' · '+s.rules.hands+' hands scheduled · '+esc(s.status)+'</small></div>'+icon('chevron')+'</button>').join('');
   all('.archiveitem').forEach(b=>b.onclick=async()=>{try{let s=entries.get(b.dataset.id);if(practiceId && s.id!==practiceId)throw Error('End the practice session before opening another recording.');if(!s.events||s.id===practiceId)s=await readSession(s.id);const watch=s.id===knownCurrent||s.id===practiceId;await pick(s,watch?Math.max(s.events.length-1,0):0,watch);}catch(e){notify(e.message);}});
 }
+async function startLocal(options){
+  const {id}=await api('sessions',options);knownCurrent=id;
+  const s=await readSession(id);await pick(s,Math.max(0,s.events.length-1),true);
+}
+function showOpenSeat(){
+  const human={name:'You',slot:NAMES.at(-1)};
+  const rules={hands:12,stack:2000,sb:10,format:'session'};
+  const lineup=NAMES.map(slot=>slot===human.slot?human.name:players[slot].name);
+  const models=Object.fromEntries(NAMES.map((slot,i)=>[lineup[i],slot===human.slot?'Your seat':players[slot].model]));
+  session={status:'ready',mySeat:human.name,privateTable:true,rules,lineup,models,events:[]};
+  renderStage({players:lineup.map(name=>({name,cards:[],stack:rules.stack})),board:[],type:'waiting',pot:0});
+  $('#modeTag').textContent='Open table';$('#feedclock').textContent='120 seconds per turn';
+  $('#feed').replaceChildren();$('#chatcount').textContent='5 players';$('#decision').hidden=true;
+  $('#runstatus').replaceChildren();$('.ledger').hidden=true;$('#replayPanel').hidden=true;
+  const entry=$('#seatEntry');entry.hidden=false;
+  entry.innerHTML='<div><strong>Your seat is ready</strong><span>2,000 chips · 12 hands</span></div><button class="primary dealin">Deal me in</button>';
+  const button=entry.querySelector('button');
+  button.onclick=async()=>{button.disabled=true;try{await startLocal({...rules,human,mode:'models'});}catch(e){notify(e.message);button.disabled=false;}};
+}
 function newDialog(draft){
   if(practiceId){notify('End the current practice session before starting another.');return;}
   modal('New session','<form id="newform"><div class="formgrid"><label class="field wide">Your role<select name="role"><option value="watch">Spectate</option><option value="play">Play a seat</option></select></label><label class="field humanfield" hidden>Your name<input name="humanName" value="You" maxlength="24"></label><label class="field humanfield" hidden>Replace seat<select name="slot"></select></label><label class="field wide">Opponents<select name="mode"><option value="demo">Demo players · no keys required</option><option value="models">Live models · configured providers</option></select></label><label class="field wide">Game format<select name="format"><option value="session">Continuous stacks</option><option value="duplicate">Duplicate deals · five seat rotations</option></select></label><label class="field">Hands<input type="number" name="hands" value="12" min="1" max="100" required></label><label class="field">Starting stack<input type="number" name="stack" value="2000" min="10" max="1000000" required></label><label class="field">Small blind<input type="number" name="sb" value="10" min="1" required></label><label class="field">Big blind<input name="bb" value="20" readonly></label></div><p id="newnote" class="formnote"></p><p id="formerror" role="alert"></p><div class="formfoot"><button class="secondary" type="button" id="connections">Players</button><button class="primary" type="submit">Start session</button></div></form>');
@@ -211,8 +251,7 @@ function newDialog(draft){
         }catch(error){practice.close();practice=null;practiceId=null;throw error;}
       }else if(form.mode.value==='models'||joined){
         if(!local)throw Error('Use the local app at http://localhost:4395 for live model play.');
-        const {id}=await api('sessions',options);knownCurrent=id;
-        const s=await readSession(id);await pick(s,Math.max(0,s.events.length-1),true);$('#dialog').close();
+        await startLocal(options);$('#dialog').close();
       }else{const s=await simulate({seed:makeSeed(),options});await persist(s);await pick(s);$('#dialog').close();startPlay();}
     }catch(e){$('#formerror').textContent=e.message;}finally{btn.disabled=false;}};
 }
@@ -247,7 +286,7 @@ $('#back').onclick=()=>seek(at-1);$('#forward').onclick=()=>seek(at+1);$('#timel
 all('[data-feed]').forEach(b=>b.onclick=()=>{feedType=b.dataset.feed;render();$('#feed').scrollTop=$('#feed').scrollHeight;});
 all('[data-go]').forEach(b=>b.onclick=()=>{location.hash=b.dataset.go;});window.onhashchange=()=>{page=location.hash==='#archive'?'archive':'table';showPage();};
 $('#import').onclick=()=>$('#file').click();$('#file').onchange=async ev=>{try{if(practiceId)throw Error('End practice before importing a replay.');const file=ev.target.files[0];if(!file)return;if(file.size>100e6)throw Error('Replay exceeds 100 MB.');const s=JSON.parse(await file.text());checkRecord(s);if(s.status==='complete')await verify(s);await persist(s);await pick(s);notify('Replay imported');}catch(e){notify(e.message);}finally{ev.target.value='';}};
-document.addEventListener('keydown',e=>{if($('#dialog').open||page!=='table'||['INPUT','SELECT','BUTTON','TEXTAREA'].includes(document.activeElement.tagName))return;
+document.addEventListener('keydown',e=>{if($('#dialog').open||!session?.events?.length||page!=='table'||['INPUT','SELECT','BUTTON','TEXTAREA'].includes(document.activeElement.tagName))return;
   if(e.code==='Space'){e.preventDefault();$('#play').click();}if(e.key==='ArrowLeft')seek(at-1);if(e.key==='ArrowRight')seek(at+1);});
 async function boot(){
   if(['localhost','127.0.0.1'].includes(location.hostname)){try{const data=await api('config');players=data.players;knownCurrent=data.current;local=true;}catch{}}
@@ -257,7 +296,7 @@ async function boot(){
   session=demo;at=Math.max(0,demo.events.findIndex(e=>e.street==='Flop'&&e.type==='action'));render();$('#feed').scrollTop=$('#feed').scrollHeight;
   page=location.hash==='#archive'?'archive':'table';showPage();
   if(knownCurrent){const s=await api('sessions/'+knownCurrent);if(['running','paused'].includes(s.status)&&page==='table'){await pick(s,Math.max(0,s.events.length-1),true);return;}}
-  if(local && location.hash==='#play')newDialog({role:'play',mode:'models',slot:NAMES.at(-1)});
+  if(local && location.hash==='#play')showOpenSeat();
 }
 window.addEventListener('beforeunload',e=>{if(practiceId){e.preventDefault();e.returnValue='';}});
 boot().catch(e=>notify('Unable to open the table: '+e.message));

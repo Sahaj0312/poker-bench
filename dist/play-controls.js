@@ -25,40 +25,67 @@ export function practiceClient(){
 
 export function renderDecision(panel,session,atLiveEdge,submit){
   const turn=session.mySeat && atLiveEdge && session.turn;
-  panel.hidden=!turn;
-  if(!turn){panel.replaceChildren();delete panel.dataset.turn;return;}
+  panel.hidden=!(session.mySeat && atLiveEdge && session.status==='running');
+  if(panel.hidden){panel.replaceChildren();delete panel.dataset.turn;return;}
+  if(!turn){
+    delete panel.dataset.turn;
+    const waiting=session.waitingFor;
+    panel.innerHTML='<div class="waitdock"><span class="turnlight"></span><strong></strong></div>';
+    panel.querySelector('strong').textContent=waiting && waiting!==session.mySeat?'Waiting for '+waiting:'Waiting for the dealer';
+    return;
+  }
   const remaining=()=>Math.max(0,Math.ceil((turn.expiresAt-Date.now())/1000))+' s';
-  // Polling must preserve focus, raise size, and unsent chat.
+  // Preserve the amount, keyboard focus and unsent chat between dealer updates.
   if(panel.dataset.turn===turn.id){panel.querySelector('output').textContent=remaining();return;}
   panel.dataset.turn=turn.id;
   const {legal}=turn;
-  panel.innerHTML='<div class="decisionhead"><h2>Your turn</h2><output></output></div><form><label class="field">Table talk <input name="chat" maxlength="180" placeholder="Optional message" autocomplete="off"></label><div class="movelist"></div><p class="moveerror" role="alert"></p></form>';
+  const event=session.events.at(-1), own=event.players.find(p=>p.name===session.mySeat);
+  const betting=event.players.every(p=>!p.streetBet);
+  panel.innerHTML='<div class="decisionhead"><h2>Your turn</h2><output></output></div><form><label class="talkfield">Table talk<input name="chat" maxlength="180" placeholder="Message with your move" autocomplete="off"></label><div class="sizing"></div><div class="movelist"></div><p class="moveerror" role="alert"></p></form>';
   panel.querySelector('output').textContent=remaining();
   const form=panel.querySelector('form'),moves=form.querySelector('.movelist');
   form.onsubmit=e=>e.preventDefault();
   function add(action,label){
     const button=document.createElement('button');
-    button.type='button';button.className=action==='fold'?'secondary':'primary';button.textContent=label;
+    button.type='button';button.className='poker-action '+action;button.textContent=label;
     button.onclick=async()=>{
       const amount=action==='raise'?Number(form.elements.amount.value):0;
       if(action==='raise' && !form.elements.amount.reportValidity())return;
-      const buttons=moves.querySelectorAll('button');
-      buttons.forEach(b=>b.disabled=true);
+      const controls=form.querySelectorAll('button, input, select');
+      controls.forEach(b=>b.disabled=true);
       try{await submit({turnId:turn.id,move:{action,amount,chat:form.elements.chat.value}});}
-      catch(e){form.querySelector('.moveerror').textContent=e.message;buttons.forEach(b=>b.disabled=false);}
+      catch(e){form.querySelector('.moveerror').textContent=e.message;controls.forEach(b=>b.disabled=false);}
     };
-    moves.append(button);
+    moves.append(button);return button;
   }
   if(legal.fold)add('fold','Fold');
   if(legal.check)add('check','Check');
-  if(legal.call)add('call','Call '+legal.call);
-  if(legal.raise){
-    const label=document.createElement('label');label.className='raiseamount';label.textContent='Raise to ';
-    const {min,max,options}=legal.raise;
-    const input=document.createElement(options?'select':'input');
-    input.name='amount';input.setAttribute('aria-label','Total street bet');
-    if(options){for(const n of options)input.add(new Option(String(n),String(n)));}
-    else{input.type='number';input.step='1';input.min=min;input.max=max;input.required=true;}
-    input.value=min;label.append(input);moves.append(label);add('raise','Raise');
+  if(legal.call)add('call','Call '+legal.call.toLocaleString('en-US'));
+  if(!legal.raise)return;
+  const {min,max,options}=legal.raise;
+  const sizing=form.querySelector('.sizing');
+  sizing.innerHTML='<div class="betsizes" role="group" aria-label="Bet sizes"></div><div class="wager"><input type="range" aria-label="Bet size slider"><label></label></div>';
+  const slider=sizing.querySelector('[type=range]'), label=sizing.querySelector('label');
+  const field=document.createElement(options?'select':'input');
+  field.name='amount';field.setAttribute('aria-label','Total street bet');
+  if(options){for(const n of options)field.add(new Option(n.toLocaleString('en-US'),String(n)));}
+  else{field.type='number';field.step='1';field.min=min;field.max=max;field.required=true;}
+  const verb=betting?'Bet':'Raise to';
+  label.textContent=verb+' ';label.append(field);
+  const raise=add('raise',verb);
+  const update=n=>{field.value=n;slider.value=options?options.indexOf(n):n;raise.textContent=(n===max?'All-in':verb)+' '+n.toLocaleString('en-US');};
+  slider.min=options?0:min;slider.max=options?options.length-1:max;slider.step=1;
+  slider.oninput=()=>update(options?options[Number(slider.value)]:Number(slider.value));
+  field.oninput=()=>{if(field.value && field.validity.valid)update(Number(field.value));};
+  const call=legal.call||0, matched=own.streetBet+call, afterCall=event.pot+call;
+  const presets=[['Min',min],['½ pot',matched+Math.round(afterCall/2)],['Pot',matched+afterCall],['All-in',max]];
+  if(options)for(const n of options)if(!presets.some(([,value])=>value===n))presets.splice(-1,0,[n.toLocaleString('en-US'),n]);
+  const used=new Set();
+  for(const [name,n] of presets){
+    if(n<min||n>max||used.has(n)||(options&&!options.includes(n)))continue;
+    used.add(n);
+    const shortcut=document.createElement('button');shortcut.type='button';shortcut.textContent=name;
+    shortcut.onclick=()=>update(n);sizing.querySelector('.betsizes').append(shortcut);
   }
+  update(min);
 }
