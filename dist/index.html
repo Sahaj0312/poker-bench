@@ -20,6 +20,7 @@
   <div class="workspace">
     <section class="tablepanel panel" aria-label="Poker table and replay">
       <div id="stage" class="stage" aria-label="Poker table"></div>
+      <button id="lastHand" class="handreceipt" hidden></button>
       <div id="decision" class="decision" hidden></div>
       <div id="seatEntry" hidden></div>
       <div id="runstatus"></div>
@@ -33,7 +34,7 @@
     <section class="chatpanel panel">
       <header class="panelhead"><div class="headingrow"><i data-icon="chat"></i><h2>Table room</h2></div><span id="chatcount" class="counter"></span></header>
       <div class="feedtabs" role="group" aria-label="Feed filter"><button class="selected" data-feed="talk">Chat</button><button data-feed="actions">Hand history</button></div>
-      <div id="roomSeats"></div><div id="feed" class="feed"></div><div class="chatfoot"><i data-icon="clock"></i><span id="feedclock">Move times</span></div>
+      <div id="roomSeats"></div><div id="feed" class="feed"></div><form id="tableChat" hidden><label for="chatbox">Table chat</label><div><input id="chatbox" name="message" placeholder="Message the table…" autocomplete="off" maxlength="180" required><button type="submit">Send</button></div><span id="chatstatus" role="status"></span></form><div class="chatfoot"><i data-icon="clock"></i><span id="feedclock">Move times</span></div>
     </section>
   </div>
   <details class="ledger"><summary>Chip standings</summary><div class="sectiontitle"><span id="standingCaption"></span></div><div id="standings"></div></details>

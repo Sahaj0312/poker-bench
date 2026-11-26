@@ -1,5 +1,7 @@
 import { NAMES, checkLineup, validateMove, TURN_LIMIT_SECONDS } from './engine.js';
 
+import {lockedRunout} from './table-room.js';
+
 export function chooseSeat(names,seat,options){
   if(!seat || !NAMES.includes(seat.slot))throw Error('Choose a seat to play.');
   if(options.format==='duplicate')throw Error('Use continuous stacks for a human seat. Duplicate rotations expose the same deal.');
@@ -57,6 +59,7 @@ export function sessionView(session,from,owner,turn,wasPrivate=false){
   const name=owner?session.humanName:null;
   return {...metadata,privateTable:true,mySeat:name,turn:owner?turn:null,events:visible.map(event=>{
     const shown=new Set((event.shown||[]).map(p=>p.name));
+    if(lockedRunout(event))for(const p of event.players)if(!p.folded)shown.add(p.name);
     return {...event,players:event.players.map(p=>p.name===name||shown.has(p.name)?p:{...p,cards:[],hiddenCount:p.cards.length})};
   })};
 }

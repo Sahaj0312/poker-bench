@@ -1,5 +1,6 @@
-import {simulate,makeSeed,NAMES,VERSION} from './engine.js';
+import {simulate,makeSeed,NAMES,VERSION,best} from './engine.js';
 import {practiceClient,renderDecision} from './play-controls.js';
+import {transcript,lockedRunout} from './table-room.js';
 import {chipPile} from './chips.js';
 import {symbol} from './seats.js';
 import {editLineup} from './lineup.js';
@@ -14,7 +15,7 @@ const timingLabel=e=>Number.isFinite(e.responseSeconds)?responseTime(e.responseS
 const openingId='opening-table-v2';
 const suit={s:'♠',h:'♥',d:'♦',c:'♣'};
 let session,at=0,playing=false,timer,pollTimer,follow=true,feedType='talk',local=false,players={},page='table',generation=0,library=new Map(),noticeTimer;
-let knownCurrent=null,practice=null,practiceId=null;
+let knownCurrent=null,practice=null,practiceId=null,revealUntil=0;
 async function readSession(id,from=0,wasPrivate=false){
   if(id===practiceId && practice)return practice.call('read',{from,wasPrivate});
   return api('sessions/'+id+'?from='+from+(wasPrivate?'&private=1':''));
@@ -36,6 +37,21 @@ function card(c,mini=false){
   const content=mini?rank+'<small>'+pip+'</small>':'<span class="rank">'+rank+'</span><span class="pip">'+pip+'</span><span class="bottompip">'+pip+'</span>';
   return '<span aria-label="'+rank+' of '+({s:'spades',h:'hearts',d:'diamonds',c:'clubs'})[c[1]]+'" class="card '+('hd'.includes(c[1])?'red':'')+'">'+content+'</span>';
 }
+function rankedHand(shown,board){
+  if(board.length!==5 || shown.cards.length!==2)return shown.hand;
+  const score=best([...shown.cards,...board]);
+  const rank=i=>'23456789TJQKA'[Math.floor(score/15**(4-i))%15-2];
+  const ranks=Array.from({length:5},(_,i)=>rank(i)).filter(Boolean).join(' · ');
+  return shown.hand+' ('+ranks+')';
+}
+function handRecap(e){
+  const hands=e.shown.map(p=>`<li><strong>${esc(p.name)}</strong><span class="recapcards">${p.cards.map(c=>card(c,true)).join('')}</span><span>${esc(rankedHand(p,e.board))}</span></li>`).join('');
+  const pots=e.pots.map((p,i)=>`<li>${p.refund?'Uncalled bet returned':i?'Side pot':'Main pot'} · ${fmt(p.amount)} · ${p.winners.map(w=>esc(e.players[w].name)).join(', ')}</li>`).join('');
+  const past=session.events.slice(0,at+1).filter(row=>row.type==='result');
+  const menu=past.map(row=>`<option value="${row.index}" ${row.index===e.index?'selected':''}>Hand ${row.hand} · ${row.shown.length?'Showdown':'Won by folds'}</option>`).join('');
+  modal('Hand '+e.hand+' · '+(hands?'Showdown':'Won by folds'),`<div class="recap"><label>Hand result <select id="resultHand">${menu}</select></label><h3>${esc(e.text)}</h3><div class="recapboard">${e.board.map(c=>card(c)).join('')}</div>${hands?`<ul>${hands}</ul>`:'<p>Every other player folded.</p>'}<ul>${pots}</ul></div>`);
+  $('#resultHand').onchange=ev=>handRecap(session.events[Number(ev.target.value)]);
+}
 function renderStage(e){
   const ready=session.status==='ready';
   const owner=session.mySeat || (!session.privateTable && session.humanName);
@@ -52,8 +68,10 @@ function renderStage(e){
     if((p.last==='Small blind'||p.last==='Big blind') && p.streetBet)status+=' '+fmt(p.streetBet);
     if(Number.isFinite(p.lastResponseSeconds))status+=' · '+responseTime(p.lastResponseSeconds);
     if(onClock)status=(own?'Your turn':'Thinking')+' · '+Math.max(0,Math.floor((Date.now()-session.turnStartedAt)/1000))+' s';
+    const revealed=e.shown?.find(q=>q.name===p.name);
+    if(revealed)status=rankedHand(revealed,e.board);
     const cards=p.hiddenCount?Array(p.hiddenCount).fill(null):p.cards;
-    return `<div class="pod seat${position}${own?' hero':''}${p.folded?' folded':''}${active?' acting':''}${winner?' winner':''}">
+    return `<div class="pod seat${position}${own?' hero':''}${p.folded?' folded':''}${active?' acting':''}${winner?' winner':''}${revealed?' revealed':''}">
       <img class="avatar" src="assets/player-${index<0?i:index}.webp" alt="">
       <div class="hole">${cards.map(c=>card(c,true)).join('')}</div>
       <div class="seatplate"><div class="playername" title="${esc(p.name)}">${esc(p.name)}</div><div class="stack">${fmt(p.stack)}</div>
@@ -64,11 +82,14 @@ function renderStage(e){
   const pot=e.type==='result'?e.pots.filter(p=>!p.refund).reduce((s,p)=>s+p.amount,0):e.pot;
   $('#stage').innerHTML=`<div class="stagebar"><span class="stageid">${icon('spade')} Table 01</span><span class="stageview">${icon(owner?'people':'eye')} ${session.mySeat?'Player view':session.privateTable?'Public view':'Spectator view'}</span></div>
     <div class="felt" aria-hidden="true"></div>
-    <div class="centerboard"><div class="feltmark" aria-hidden="true">Poker Bench</div>
+    <div class="centerboard">${e.type==='result'?`<div class="winnertext">${esc(e.text)}</div>`:'<div class="feltmark" aria-hidden="true">Poker Bench</div>'}
     ${ready?'<div class="streetlabel">Waiting for the deal</div>':`<div class="pot">${e.type==='result'?'':chipPile(e.pot,session.rules.stack)}<small>${e.type==='result'?'Awarded':'Total pot'}</small><b>${fmt(pot)}</b></div>
-    <div class="boardcards">${Array.from({length:5},(_,i)=>card(e.board[i])).join('')}</div><div class="streetlabel">${esc(e.street)}</div>`}</div>${seats}
+    <div class="boardcards">${Array.from({length:5},(_,i)=>card(e.board[i])).join('')}</div><div class="streetlabel">${e.type==='result'&&!e.shown.length?'Won by folds':!ready && lockedRunout(e)?'All-in runout':esc(e.street)}</div>`}</div>${seats}
     ${ready?'':`<button id="audit" class="stageaudit">${icon('shield')} Fairness log</button>`}`;
   if(!ready)$('#audit').onclick=auditDialog;
+  const result=ready?null:session.events.slice(0,at+1).findLast(x=>x.type==='result');
+  const last=$('#lastHand');last.hidden=!result;
+  if(result){last.textContent='Hand '+result.hand+' · '+result.text+' · View result';last.onclick=()=>handRecap(result);}
   $('#handmetric').textContent=(ready?'0':e.hand)+' / '+session.rules.hands;
   $('#gameformat').textContent=session.rules.format==='duplicate'?'Duplicate deals':'Continuous stacks';
   $('#blinds').textContent=fmt(session.rules.sb)+' / '+fmt(session.rules.sb*2);
@@ -79,7 +100,7 @@ function renderStage(e){
 }
 function renderFeed(events){
   const feed=$('#feed'), wasAtEnd=feed.scrollHeight-feed.scrollTop-feed.clientHeight<30;
-  const visible=feedType==='talk'?events.filter(e=>e.chat):events;
+  const visible=feedType==='talk'?transcript(session,at):events;
   $('#chatcount').textContent=visible.length+(feedType==='talk'?' messages':' events');
   let previous='',html='';
   for(const e of visible.slice(-65)){
@@ -116,6 +137,10 @@ function render(){
     if(session.id===id){if(session.turn?.id===payload.turnId)session.turn=null;render();}
   });
   renderStage(e);renderFeed(events);
+  const composer=$('#tableChat');
+  composer.hidden=!(session.mySeat && Array.isArray(session.tableChat) && ['running','paused'].includes(session.status) && follow && at===total-1);
+  composer.querySelector('button').disabled=!!session.chatBusy || composer.dataset.sending==='yes';
+  $('#chatstatus').textContent=session.chatBusy?session.chatBusy+' is replying…':session.chatError||'';
   const timed=session.version===VERSION;
   $('#feedclock').textContent=timed?(session.mode==='demo'?'Simulated move times':'Observed move times'):'Move times unavailable in this replay';
   const tablePace=$('#speed option[value="table"]');tablePace.disabled=!timed;
@@ -163,14 +188,15 @@ function tick(){
   const next=session.events[at+1];
   if(!next){stopPlay();render();return;}
   const speed=$('#speed').value;
-  const delay=speed==='table'?(next.responseSeconds??0.4)*1000:1500/Number(speed);
+  const resultDelay=session.events[at].type==='result'?4500:0;
+  const delay=resultDelay/(Number(speed)||1) || (speed==='table'?(next.responseSeconds??0.4)*1000:1500/Number(speed));
   timer=setTimeout(()=>{at++;render();tick();},delay);
 }
 function startPlay(){if(at===session.events.length-1)at=0;playing=true;follow=false;render();tick();}
 function modal(title,html){$('#dialogtitle').textContent=title;$('#dialogbody').innerHTML=html;if(!$('#dialog').open)$('#dialog').showModal();}
 function stamp(s){return new Date(s.created).toLocaleString(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});}
 async function pick(s,pos=0,watch=false){
-  generation++;clearTimeout(pollTimer);stopPlay();session=s;at=Math.min(pos,Math.max(0,s.events.length-1));follow=watch;page='table';location.hash='table';showPage();render();
+  generation++;revealUntil=0;clearTimeout(pollTimer);stopPlay();session=s;at=Math.min(pos,Math.max(0,s.events.length-1));follow=watch;page='table';location.hash='table';showPage();render();
   if(watch && ['running','paused'].includes(s.status))poll(generation);
 }
 async function poll(gen){
@@ -181,7 +207,13 @@ async function poll(gen){
     for(const key of ['turnStartedAt','waitingFor','privateTable','mySeat','turn'])delete session[key];
     Object.assign(session,meta);
     if(replaceHistory)session.events=events;else session.events.push(...events);
-    if(follow)at=Math.max(0,session.events.length-1);
+    if(follow){
+      const result=events.findLast(e=>e.type==='result');
+      if(!replaceHistory && result && session.status==='running'){
+        at=result.index;revealUntil=Date.now()+(result.shown.length?5100:2200);
+      }
+      if(session.turn || session.status!=='running' || Date.now()>=revealUntil)at=Math.max(0,session.events.length-1);
+    }
     render();
     if(!['running','paused'].includes(session.status)){await persist(session);
       if(session.id===practiceId){practice.close();practice=null;practiceId=null;}
@@ -211,7 +243,7 @@ function showOpenSeat(){
   session={status:'ready',mySeat:human.name,privateTable:true,rules,lineup,models,events:[]};
   renderStage({players:lineup.map(name=>({name,cards:[],stack:rules.stack})),board:[],type:'waiting',pot:0});
   $('#modeTag').textContent='Open table';$('#feedclock').textContent='120 seconds per turn';
-  $('#feed').replaceChildren();$('#chatcount').textContent='5 players';$('#decision').hidden=true;
+  $('#tableChat').hidden=true;$('#feed').replaceChildren();$('#chatcount').textContent='5 players';$('#decision').hidden=true;
   $('#runstatus').replaceChildren();$('.ledger').hidden=true;$('#replayPanel').hidden=true;
   const entry=$('#seatEntry');entry.hidden=false;
   entry.innerHTML='<div><strong>Your seat is ready</strong><span>2,000 chips · 12 hands</span></div><button class="primary dealin">Deal me in</button>';
@@ -282,6 +314,23 @@ $('#theme').onclick=()=>{
 };
 themeControl();paintIcons();$('#settings').onclick=configDialog;$('#new').onclick=newDialog;$('#close').onclick=()=>$('#dialog').close();$('#download').onclick=exportSession;$('#speed').onchange=tick;
 $('#play').onclick=()=>{if(playing){stopPlay();render();}else startPlay();};
+$('#tableChat').onsubmit=async ev=>{
+  ev.preventDefault();
+  const form=ev.currentTarget,input=form.elements.message,button=form.querySelector('button');
+  if(button.disabled||!input.value.trim())return;
+  const id=session.id, original=input.value, payload={id:crypto.randomUUID(),text:original.trim()};
+  form.dataset.sending='yes';button.disabled=true;
+  try{
+    if(id===practiceId && practice)await practice.call('chat',payload);
+    else await api('sessions/'+id+'/chat',payload);
+    if(session.id===id){
+      if(input.value===original)input.value='';
+      feedType='talk';const latest=await readSession(id,session.events.length);
+      if(session.id===id){session.tableChat=latest.tableChat;session.chatBusy=latest.chatBusy;session.chatError=latest.chatError;render();}
+    }
+  }catch(error){notify(error.message);}
+  finally{delete form.dataset.sending;if(session.id===id)button.disabled=!!session.chatBusy;}
+};
 $('#back').onclick=()=>seek(at-1);$('#forward').onclick=()=>seek(at+1);$('#timeline').oninput=e=>seek(Number(e.target.value));
 all('[data-feed]').forEach(b=>b.onclick=()=>{feedType=b.dataset.feed;render();$('#feed').scrollTop=$('#feed').scrollHeight;});
 all('[data-go]').forEach(b=>b.onclick=()=>{location.hash=b.dataset.go;});window.onhashchange=()=>{page=location.hash==='#archive'?'archive':'table';showPage();};

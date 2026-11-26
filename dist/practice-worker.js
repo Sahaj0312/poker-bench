@@ -1,7 +1,8 @@
 import { simulate, demoPolicy, makeSeed, NAMES, defaults } from './engine.js';
 import { chooseSeat, HumanSeat, recordTimeout, sessionView } from './human-seat.js';
 
-let session, stop;
+import { tableConversation, practiceReply, showHandEnd } from './table-room.js';
+let session, stop, sendChat;
 const seat=new HumanSeat();
 
 async function start(input){
@@ -13,8 +14,8 @@ async function start(input){
   let ready,fail;
   const started=new Promise((ok,no)=>{ready=ok;fail=no;});
   simulate({seed,mode:'practice',lineup,models,options:rules,
-    onStart:s=>{session=s;session.humanName=name;},
-    onEvent:()=>ready(session.id),
+    onStart:s=>{session=s;session.humanName=name;sendChat=tableConversation(s,practiceReply);},
+    onEvent:async event=>{ready(session.id);await showHandEnd(event,rules,stop.signal);},
     decide:async view=>{
       stop.signal.throwIfAborted();
       session.waitingFor=view.name;session.turnStartedAt=Date.now();
@@ -35,6 +36,7 @@ self.onmessage=async({data:{id,method,value}})=>{
     let result;
     if(method==='start')result=await start(value);
     else if(method==='read')result=sessionView(session,value.from,true,seat.turn,value.wasPrivate);
+    else if(method==='chat')await sendChat(value);
     else if(method==='move')seat.submit(value);
     else if(method==='stop')stop.abort();
     else throw Error('Unknown practice control.');

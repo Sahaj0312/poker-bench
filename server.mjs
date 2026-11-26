@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { simulate,makeSeed,defaults,NAMES,checkLineup,demoPolicy } from './dist/engine.js';
 import { chooseSeat,HumanSeat,recordTimeout,sessionView } from './dist/human-seat.js';
 import { isLoopback } from './dist/connections.js';
-import { baseConfig,providerMove } from './providers.mjs';
+import { baseConfig,providerMove,providerChat } from './providers.mjs';
+import { tableConversation, practiceReply, showHandEnd } from './dist/table-room.js';
 const root=path.dirname(fileURLToPath(import.meta.url));
 const data=process.env.RIVER_DATA_DIR||path.join(root,'data');
 await fs.mkdir(data,{recursive:true,mode:0o700});
@@ -48,11 +49,12 @@ async function load(id){
   const session=JSON.parse(lines.shift()).meta;session.events=[];session.status='interrupted';
   for(const line of lines.filter(Boolean)){
     let row;try{row=JSON.parse(line);}catch{break;}
+    if(row.chat)(session.tableChat??=[]).push(row.chat);
     if(row.event)session.events.push(row.event);if(row.finish)Object.assign(session,row.finish);
   }
   return session;
 }
-let human=null,ownerKey=null;
+let human=null,ownerKey=null,sendChat=null;
 const ownsSeat=req=>!!ownerKey && (req.headers.cookie||'').split(';').some(c=>c.trim()==='pokerSeat='+ownerKey);
 async function run(options,players,mode,humanName){
   const seed=makeSeed(), id=crypto.randomUUID();
@@ -66,22 +68,27 @@ async function run(options,players,mode,humanName){
   const models=Object.fromEntries(NAMES.map(slot=>{
     const p=players[slot];return [p.name,{kind:p.kind,model:p.model,endpoint:p.url}];
   }));
+  const seatConfig=name=>{
+    const slot=slots.get(name), frozen=players[slot], updated=config()[slot];
+    return updated.url===frozen.url && updated.kind===frozen.kind?{...frozen,key:updated.key}:frozen;
+  };
   task=simulate({id,seed,options,mode,models,lineup,
-    onStart:async session=>{current=session;if(humanName)session.humanName=humanName;await append(id,{meta:{...session,events:[]}});},
-    onEvent:async event=>{await append(id,{event});if(event.index===0)ready();},
+    onStart:async session=>{current=session;if(humanName){
+      session.humanName=humanName;
+      sendChat=tableConversation(session,bot?practiceReply:(name,ctx)=>providerChat(seatConfig(name),ctx,stop.signal),message=>append(id,{chat:message}));
+    }await append(id,{meta:{...session,events:[]}});},
+    onEvent:async event=>{await append(id,{event});if(event.index===0)ready();
+      if(humanName){delete current.waitingFor;await showHandEnd(event,options,stop.signal);}},
     decide:async (view,restartClock)=>{
       for(;;){
         stop.signal.throwIfAborted();current.status='running';current.waitingFor=view.name;delete current.error;
         try{
-          const slot=slots.get(view.name);
-          const frozen=players[slot], updated=config()[slot];
-          const seatConfig=updated.url===frozen.url && updated.kind===frozen.kind?{...frozen,key:updated.key}:frozen;
           current.turnStartedAt=Date.now();
           restartClock();
           try{
             if(view.name===humanName)return await human.wait(view,stop.signal,a=>recordTimeout(current,humanName,a));
             if(bot)return await bot(view);
-            return await providerMove(seatConfig,view,stop.signal);
+            return await providerMove(seatConfig(view.name),current.tableChat?.length?{...view,tableChat:[...current.tableChat]}:view,stop.signal);
           }
           finally{delete current.turnStartedAt;}
         }catch(e){
@@ -97,7 +104,7 @@ async function run(options,players,mode,humanName){
       fail(e);
       if(current?.id===id){current.status=stop.signal.aborted?'stopped':'interrupted';current.seed=seed;delete current.waitingFor;
         await append(id,{finish:{status:current.status,seed,incidents:current.incidents||[]}});}
-    }).finally(()=>{task=null;abort=null;wake=null;human=null;});
+    }).finally(()=>{task=null;abort=null;wake=null;human=null;sendChat=null;stop.abort();});
   await started;return id;
 }
 const json=(res,code,value)=>{res.writeHead(code,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(value));};
@@ -169,7 +176,7 @@ const app=http.createServer(async(req,res)=>{
         const sessions=await Promise.all(ids.map(async id=>{const {events,...meta}=await load(id);return {...meta,count:events.length};}));
         return json(res,200,sessions);
       }
-      const match=p.match(/^\/api\/sessions\/([0-9a-f-]{36})(?:\/(retry|stop|move))?$/);
+      const match=p.match(/^\/api\/sessions\/([0-9a-f-]{36})(?:\/(retry|stop|move|chat))?$/);
       if(match && req.method==='GET' && !match[2]){
         const s=await load(match[1]),from=Math.max(0,Number(url.searchParams.get('from'))||0);
         return json(res,200,sessionView(s,from,ownsSeat(req),human?.turn??null,url.searchParams.has('private')));
@@ -177,6 +184,7 @@ const app=http.createServer(async(req,res)=>{
       if(match && req.method==='POST' && current?.id===match[1] && task){
         if(human && !ownsSeat(req))return json(res,403,{error:'Only the player who took this seat can act.'});
         if(match[2]==='move'&&human)human.submit(await body(req));
+        else if(match[2]==='chat' && sendChat)await sendChat(await body(req));
         else if(match[2]==='retry'&&wake)wake();
         else if(match[2]==='stop'){abort.abort();wake?.();}
         else throw Error('Control unavailable');

@@ -18,6 +18,10 @@ export function checkRecord(s){
   if(![VERSION,LEGACY_VERSION].includes(s?.version)||!Array.isArray(s.events)||s.events.length<1||s.events.length>100000||typeof s.id!=='string'||typeof s.commitment!=='string'||!['demo','models','practice'].includes(s.mode))throw Error('Unrecognized poker replay.');
   defaults(s.rules);
   const names=checkLineup(s.lineup??NAMES);
+  if(s.tableChat!==undefined && (!Array.isArray(s.tableChat)||s.tableChat.some((m,i,all)=>
+    !m || !names.includes(m.speaker)||typeof m.chat!=='string'||!m.chat.trim()||[...m.chat].length>180||
+    !Number.isInteger(m.index)||!s.events[m.index]||m.hand!==s.events[m.index].hand||m.street!==s.events[m.index].street||
+    (i>0 && m.index<all[i-1].index))))throw Error('Invalid table chat in replay.');
   const validCards=a=>Array.isArray(a)&&a.every(c=>typeof c==='string'&&/^[2-9TJQKA][shdc]$/.test(c));
   for(const [i,e] of s.events.entries()){
     if(s.version===VERSION && e.type==='action' && !(Number.isSafeInteger(e.responseSeconds*10)&&typeof e.responseSeconds==='number'&&e.responseSeconds>=0))throw Error('Invalid response time at event '+i);

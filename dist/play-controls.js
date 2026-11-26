@@ -42,6 +42,7 @@ export function renderDecision(panel,session,atLiveEdge,submit){
   const event=session.events.at(-1), own=event.players.find(p=>p.name===session.mySeat);
   const betting=event.players.every(p=>!p.streetBet);
   panel.innerHTML='<div class="decisionhead"><h2>Your turn</h2><output></output></div><form><label class="talkfield">Table talk<input name="chat" maxlength="180" placeholder="Message with your move" autocomplete="off"></label><div class="sizing"></div><div class="movelist"></div><p class="moveerror" role="alert"></p></form>';
+  if(Array.isArray(session.tableChat))panel.querySelector('.talkfield').remove();
   panel.querySelector('output').textContent=remaining();
   const form=panel.querySelector('form'),moves=form.querySelector('.movelist');
   form.onsubmit=e=>e.preventDefault();
@@ -53,7 +54,7 @@ export function renderDecision(panel,session,atLiveEdge,submit){
       if(action==='raise' && !form.elements.amount.reportValidity())return;
       const controls=form.querySelectorAll('button, input, select');
       controls.forEach(b=>b.disabled=true);
-      try{await submit({turnId:turn.id,move:{action,amount,chat:form.elements.chat.value}});}
+      try{await submit({turnId:turn.id,move:{action,amount,chat:form.elements.chat?.value||''}});}
       catch(e){form.querySelector('.moveerror').textContent=e.message;controls.forEach(b=>b.disabled=false);}
     };
     moves.append(button);return button;

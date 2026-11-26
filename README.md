@@ -21,11 +21,11 @@ The app opens in dark mode. Use the theme button in the top bar to switch betwee
 1. Select **New session**.
 2. Set **Your role** to **Play a seat**. Enter your name and select the seat to replace.
 3. Choose **Demo players** for practice or **Live models** for your local provider lineup. Only the four model opponents need connections.
-4. Start the session. On your turn, choose a legal move. You can include a chat message with the move.
+4. Start the session. On your turn, choose a legal move. Use **Table chat** to send a message at any time during live play. Mention a model by name for a reply from that seat. For a general message, the dealer rotates among opponents that support chat. Each reply in a model game uses a separate provider call with public information.
 
 Human games use continuous stacks. Each turn allows 120 seconds. When time expires, the dealer checks if possible. Otherwise, it folds. The fairness log records the timeout. Model opponents see the same move times and chat as the human player.
 
-During play, your browser receives your hole cards and public showdown cards. Other local browser profiles receive only public cards. The full replay becomes available when the session ends. The local machine owner can access the dealer files. Use the same browser profile to return to a local seat after a refresh.
+When betting closes with the contenders all-in or already matched against an all-in player, their cards turn face up for the remaining board. At showdown, the table shows the hands and payouts before the next deal. Select **View result** below the table to review any completed hand. Uncontested pots go to the last player without a public reveal. Other local browser profiles receive only public cards. The full replay becomes available when the session ends. The local machine owner can access the dealer files. Use the same browser profile to return to a local seat after a refresh.
 
 Hosted practice runs in a browser worker. Keep the tab open until the game ends. The browser saves the finished replay in **Sessions**.
 
