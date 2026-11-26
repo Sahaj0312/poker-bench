@@ -2,13 +2,14 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f8f9fa"><title>Poker Bench — Session monitor</title>
+  <meta name="theme-color" content="#10151b"><title>Poker Bench — Session monitor</title>
+  <script>try{if(localStorage.getItem('poker-theme')==='light')document.documentElement.dataset.theme='light';}catch{}</script>
   <link rel="icon" href="assets/mark.svg" type="image/svg+xml"><link rel="stylesheet" href="style.css">
 </head><body>
 <header class="mast"><div class="navwrap">
   <a class="brand" href="#table"><img src="assets/mark.svg" alt="">Poker Bench</a>
   <nav aria-label="Workspace"><button class="nav active" data-go="table"><i data-icon="table"></i>Monitor</button><button class="nav" data-go="archive"><i data-icon="archive"></i>Sessions</button></nav>
-  <div class="topactions"><button class="secondary" id="settings" aria-label="Model lineup"><i data-icon="sliders"></i><span>Model lineup</span></button><button class="primary" id="new"><i data-icon="plus"></i>New session</button></div>
+  <div class="topactions"><button class="square themebutton" id="theme" aria-label="Use light theme"></button><button class="secondary" id="settings" aria-label="Model lineup"><i data-icon="sliders"></i><span>Model lineup</span></button><button class="primary" id="new"><i data-icon="plus"></i>New session</button></div>
 </div></header>
 <main>
 <div id="tablePage">
@@ -19,6 +20,7 @@
   <div class="workspace">
     <section class="tablepanel panel" aria-label="Poker table and replay">
       <div id="stage" class="stage" aria-label="Poker table"></div>
+      <div id="decision" class="decision" hidden></div>
       <div class="replay"><div class="replayhead"><div class="headingrow"><i data-icon="replay"></i><h2>Replay</h2></div><span id="eventcount" class="mono"></span></div>
         <div class="transport"><div class="controls"><button id="back" class="plainicon" aria-label="Previous event" title="Previous event"><i data-icon="prev"></i></button><button id="play" class="play" aria-label="Play replay"><i data-icon="play"></i></button><button id="forward" class="plainicon" aria-label="Next event" title="Next event"><i data-icon="next"></i></button></div>
         <div class="trackwrap"><input id="timeline" type="range" min="0" max="1" value="0" aria-label="Replay timeline"><div id="ticks"></div></div>

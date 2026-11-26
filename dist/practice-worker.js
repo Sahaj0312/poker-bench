@@ -1,0 +1,43 @@
+import { simulate, demoPolicy, makeSeed, NAMES, defaults } from './engine.js';
+import { chooseSeat, HumanSeat, recordTimeout, sessionView } from './human-seat.js';
+
+let session, stop;
+const seat=new HumanSeat();
+
+async function start(input){
+  const rules=defaults(input);
+  const lineup=chooseSeat(NAMES,input.human,rules);
+  const name=input.human.name, seed=makeSeed(), bot=demoPolicy(seed);
+  stop=new AbortController();
+  const models=Object.fromEntries(lineup.map(n=>[n,n===name?{kind:'human',model:'Human'}:{kind:'demo',model:'Demo policy'}]));
+  let ready,fail;
+  const started=new Promise((ok,no)=>{ready=ok;fail=no;});
+  simulate({seed,mode:'practice',lineup,models,options:rules,
+    onStart:s=>{session=s;session.humanName=name;},
+    onEvent:()=>ready(session.id),
+    decide:async view=>{
+      stop.signal.throwIfAborted();
+      session.waitingFor=view.name;session.turnStartedAt=Date.now();
+      try{
+        if(view.name===name)return await seat.wait(view,stop.signal,a=>recordTimeout(session,name,a));
+        return await bot(view);
+      }finally{delete session.turnStartedAt;delete session.waitingFor;}
+    }
+  }).catch(error=>{
+    if(session){session.status=stop.signal.aborted?'stopped':'interrupted';session.seed=seed;}
+    fail(error);
+  });
+  return {id:await started};
+}
+
+self.onmessage=async({data:{id,method,value}})=>{
+  try{
+    let result;
+    if(method==='start')result=await start(value);
+    else if(method==='read')result=sessionView(session,value.from,true,seat.turn,value.wasPrivate);
+    else if(method==='move')seat.submit(value);
+    else if(method==='stop')stop.abort();
+    else throw Error('Unknown practice control.');
+    self.postMessage({id,result});
+  }catch(error){self.postMessage({id,error:error.message});}
+};

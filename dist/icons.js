@@ -1,4 +1,6 @@
 const paths={
+sun:'<circle cx="12" cy="12" r="4"/><path d="M12 2v2m0 16v2M2 12h2m16 0h2M5 5l2 2m10 10 2 2M5 19l2-2M17 7l2-2"/>',
+moon:'<path d="M20 15a9 9 0 0 1-11-11 9 9 0 1 0 11 11z"/>',
 table:'<rect x="2" y="5" width="20" height="14" rx="7"/><path d="M7 9h10M7 15h10"/>',
 archive:'<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v11h14V9m-10 4h6"/>',
 sliders:'<path d="M4 7h7m4 0h5M4 17h3m4 0h9"/><circle cx="13" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>',

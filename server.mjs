@@ -2,7 +2,8 @@ import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { simulate,makeSeed,defaults,NAMES,checkLineup } from './dist/engine.js';
+import { simulate,makeSeed,defaults,NAMES,checkLineup,demoPolicy } from './dist/engine.js';
+import { chooseSeat,HumanSeat,recordTimeout,sessionView } from './dist/human-seat.js';
 import { isLoopback } from './dist/connections.js';
 import { baseConfig,providerMove } from './providers.mjs';
 const root=path.dirname(fileURLToPath(import.meta.url));
@@ -51,18 +52,23 @@ async function load(id){
   }
   return session;
 }
-async function run(options,players){
+let human=null,ownerKey=null;
+const ownsSeat=req=>!!ownerKey && (req.headers.cookie||'').split(';').some(c=>c.trim()==='pokerSeat='+ownerKey);
+async function run(options,players,mode,humanName){
   const seed=makeSeed(), id=crypto.randomUUID();
   const stop=new AbortController();abort=stop;
+  human=humanName?new HumanSeat():null;
+  ownerKey=humanName?crypto.randomUUID():null;
+  const bot=mode==='practice'?demoPolicy(seed):null;
   let ready,fail;const started=new Promise((a,b)=>{ready=a;fail=b;});
   const slots=new Map(NAMES.map(slot=>[players[slot].name,slot]));
   const lineup=checkLineup([...slots.keys()]);
   const models=Object.fromEntries(NAMES.map(slot=>{
     const p=players[slot];return [p.name,{kind:p.kind,model:p.model,endpoint:p.url}];
   }));
-  task=simulate({id,seed,options,mode:'models',models,lineup,
-    onStart:async session=>{current=session;await append(id,{meta:{...session,events:[]}});ready();},
-    onEvent:async event=>{await append(id,{event});},
+  task=simulate({id,seed,options,mode,models,lineup,
+    onStart:async session=>{current=session;if(humanName)session.humanName=humanName;await append(id,{meta:{...session,events:[]}});},
+    onEvent:async event=>{await append(id,{event});if(event.index===0)ready();},
     decide:async (view,restartClock)=>{
       for(;;){
         stop.signal.throwIfAborted();current.status='running';current.waitingFor=view.name;delete current.error;
@@ -72,7 +78,11 @@ async function run(options,players){
           const seatConfig=updated.url===frozen.url && updated.kind===frozen.kind?{...frozen,key:updated.key}:frozen;
           current.turnStartedAt=Date.now();
           restartClock();
-          try{return await providerMove(seatConfig,view,stop.signal);}
+          try{
+            if(view.name===humanName)return await human.wait(view,stop.signal,a=>recordTimeout(current,humanName,a));
+            if(bot)return await bot(view);
+            return await providerMove(seatConfig,view,stop.signal);
+          }
           finally{delete current.turnStartedAt;}
         }catch(e){
           stop.signal.throwIfAborted();
@@ -87,7 +97,7 @@ async function run(options,players){
       fail(e);
       if(current?.id===id){current.status=stop.signal.aborted?'stopped':'interrupted';current.seed=seed;delete current.waitingFor;
         await append(id,{finish:{status:current.status,seed,incidents:current.incidents||[]}});}
-    }).finally(()=>{task=null;abort=null;wake=null;});
+    }).finally(()=>{task=null;abort=null;wake=null;human=null;});
   await started;return id;
 }
 const json=(res,code,value)=>{res.writeHead(code,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(value));};
@@ -133,25 +143,41 @@ const app=http.createServer(async(req,res)=>{
         return json(res,200,{models:[...new Set(ids)].sort()});
       }
       if(req.method==='POST'&&p==='/api/sessions'){
-        const options=defaults(await body(req)), players=config();
-        if(task)return json(res,409,{error:'A model session is already running.'});
-        for(const slot of NAMES)connection(players[slot],slot);
-        checkLineup(NAMES.map(n=>players[n].name));
-        const missing=NAMES.map(n=>players[n]).filter(p=>!p.model||(p.kind!=='codex'&&(!p.url||(!p.key&&!isLoopback(p.url))))).map(p=>p.name);
-        if(missing.length)throw Error('Configure these seats first: '+missing.join(', '));
-        return json(res,201,{id:await run(options,players)});
+        const request=await body(req),options=defaults(request);
+        const mode=request.mode??'models';
+        if(!['practice','models'].includes(mode))throw Error('Unknown game mode.');
+        if(mode==='practice'&&!request.human)throw Error('Choose a seat to practice.');
+        if(task)return json(res,409,{error:'A local session is already running.'});
+        const players=mode==='practice'?Object.fromEntries(NAMES.map(n=>[n,{name:n,kind:'demo',model:'Demo policy',url:''}])):config();
+        const names=NAMES.map(slot=>players[slot].name);
+        if(request.human){
+          chooseSeat(names,request.human,options);
+          players[request.human.slot]={name:request.human.name,kind:'human',model:'Human',url:''};
+        }else checkLineup(names);
+        if(mode==='models'){
+          const ai=NAMES.filter(n=>players[n].kind!=='human');
+          for(const slot of ai)connection(players[slot],slot);
+          const missing=ai.map(n=>players[n]).filter(p=>!p.model||(p.kind!=='codex'&&(!p.url||(!p.key&&!isLoopback(p.url))))).map(p=>p.name);
+          if(missing.length)throw Error('Configure these seats first: '+missing.join(', '));
+        }
+        const id=await run(options,players,mode,request.human?.name);
+        if(ownerKey)res.setHeader('Set-Cookie','pokerSeat='+ownerKey+'; HttpOnly; SameSite=Strict; Path=/api');
+        return json(res,201,{id});
       }
       if(req.method==='GET'&&p==='/api/sessions'){
         const ids=(await fs.readdir(data)).filter(f=>f.endsWith('.jsonl')).map(f=>f.slice(0,-6));
         const sessions=await Promise.all(ids.map(async id=>{const {events,...meta}=await load(id);return {...meta,count:events.length};}));
         return json(res,200,sessions);
       }
-      const match=p.match(/^\/api\/sessions\/([0-9a-f-]{36})(?:\/(retry|stop))?$/);
+      const match=p.match(/^\/api\/sessions\/([0-9a-f-]{36})(?:\/(retry|stop|move))?$/);
       if(match && req.method==='GET' && !match[2]){
-        const {events,...meta}=await load(match[1]);return json(res,200,{...meta,events:events.slice(Math.max(0,Number(url.searchParams.get('from'))||0))});
+        const s=await load(match[1]),from=Math.max(0,Number(url.searchParams.get('from'))||0);
+        return json(res,200,sessionView(s,from,ownsSeat(req),human?.turn??null,url.searchParams.has('private')));
       }
       if(match && req.method==='POST' && current?.id===match[1] && task){
-        if(match[2]==='retry'&&wake)wake();
+        if(human && !ownsSeat(req))return json(res,403,{error:'Only the player who took this seat can act.'});
+        if(match[2]==='move'&&human)human.submit(await body(req));
+        else if(match[2]==='retry'&&wake)wake();
         else if(match[2]==='stop'){abort.abort();wake?.();}
         else throw Error('Control unavailable');
         return json(res,200,{ok:true});

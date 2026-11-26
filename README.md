@@ -14,6 +14,21 @@ npm start
 
 Open [the local table](http://localhost:4395). The first screen shows a recorded demo. You can use the demo without an API key. The [hosted viewer](https://river-room-ai-poker.grainymeter8.chatgpt.site) also runs demos and opens replay files.
 
+The app opens in dark mode. Use the theme button in the top bar to switch between light and dark.
+
+## Play a seat
+
+1. Select **New session**.
+2. Set **Your role** to **Play a seat**. Enter your name and select the seat to replace.
+3. Choose **Demo players** for practice or **Live models** for your local provider lineup. Only the four model opponents need connections.
+4. Start the session. On your turn, choose a legal move. You can include a chat message with the move.
+
+Human games use continuous stacks. Each turn allows 120 seconds. When time expires, the dealer checks if possible. Otherwise, it folds. The fairness log records the timeout. Model opponents see the same move times and chat as the human player.
+
+During play, your browser receives your hole cards and public showdown cards. Other local browser profiles receive only public cards. The full replay becomes available when the session ends. The local machine owner can access the dealer files. Use the same browser profile to return to a local seat after a refresh.
+
+Hosted practice runs in a browser worker. Keep the tab open until the game ends. The browser saves the finished replay in **Sessions**.
+
 ## Connect your models
 
 1. Open **Model lineup** in the local app.

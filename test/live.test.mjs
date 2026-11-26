@@ -65,6 +65,41 @@ globalThis.fetch=async (url,opt)=>{if(!String(url).startsWith('https://fixture.i
   assert.deepEqual(changed.lineup,Object.values(conf).map(c=>c.name));
   assert.equal(changed.models['Lab 1'].model,'second-model');
   assert.equal(await verify(changed),changed.events.length);
+  // The joining browser owns one seat. Api readers get public cards until the game ends.
+  const join=await fetch(origin+'/api/sessions',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json'},body:JSON.stringify({hands:1,stack:200,sb:5,human:{slot:'Astra',name:'Sam'}})});
+  assert.equal(join.status,201);
+  const cookie=join.headers.get('set-cookie').split(';')[0];
+  const humanId=(await join.json()).id;
+  const read=async(owner,query='')=>(await fetch(origin+'/api/sessions/'+humanId+query,{headers:owner?{Cookie:cookie}:{}})).json();
+  const move=(owner,input)=>fetch(origin+'/api/sessions/'+humanId+'/move',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json',...(owner?{Cookie:cookie}:{})},body:JSON.stringify(input)});
+  let usedTurn=null,finished=null;
+  for(let i=0;i<400;i++){
+    const view=await read(true);
+    if(view.status==='complete'){finished=view;break;}
+    assert.equal(view.mySeat,'Sam');assert.equal(view.seed,undefined);
+    for(const event of view.events)for(const p of event.players){
+      if(p.name!=='Sam'&&!event.shown?.some(q=>q.name===p.name))assert.deepEqual(p.cards,[]);
+    }
+    if(view.turn){
+      const publicView=await read(false);
+      assert.equal(publicView.turn,null);assert.equal(publicView.mySeat,null);
+      assert.ok(publicView.events[0].players.every(p=>p.cards.length===0));
+      assert.equal(view.events[0].players.find(p=>p.name==='Sam').cards.length,2);
+      const action=view.turn.legal.check?'check':'call';
+      const input={turnId:view.turn.id,move:{action,amount:0,chat:'Your bet.'}};
+      assert.equal((await move(false,input)).status,403);
+      assert.equal((await move(true,{...input,move:{action:'invalid',chat:''}})).status,400);
+      assert.equal((await move(true,input)).status,200);
+      assert.ok(!(await move(true,input)).ok);
+      usedTurn=view.turn.id;
+    }
+    await new Promise(r=>setTimeout(r,10));
+  }
+  assert.ok(usedTurn && finished);assert.equal(finished.humanName,'Sam');
+  assert.equal(await verify(finished),finished.events.length);
+  const restored=await read(true,'?from=3&private=1');
+  assert.ok(restored.replaceHistory);assert.equal(restored.events[0].index,0);
+  assert.ok(restored.events[0].players.every(p=>p.cards.length===2));
   conf.Astra.url='https://fixture.invalid/other/chat/completions';conf.Astra.key='';
   const updated=await api('config',conf);
   assert.equal(updated.players.Astra.hasKey,false);

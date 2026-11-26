@@ -1,4 +1,5 @@
 import {simulate,makeSeed,NAMES,VERSION} from './engine.js';
+import {practiceClient,renderDecision} from './play-controls.js';
 import {symbol} from './seats.js';
 import {editLineup} from './lineup.js';
 import {icon,paintIcons} from './icons.js';
@@ -12,13 +13,23 @@ const timingLabel=e=>Number.isFinite(e.responseSeconds)?responseTime(e.responseS
 const openingId='opening-table-v2';
 const suit={s:'♠',h:'♥',d:'♦',c:'♣'};
 let session,at=0,playing=false,timer,pollTimer,follow=true,feedType='talk',local=false,players={},page='table',generation=0,library=new Map(),noticeTimer;
-let knownCurrent=null;
+let knownCurrent=null,practice=null,practiceId=null;
+async function readSession(id,from=0,wasPrivate=false){
+  if(id===practiceId && practice)return practice.call('read',{from,wasPrivate});
+  return api('sessions/'+id+'?from='+from+(wasPrivate?'&private=1':''));
+}
+function sessionLabel(s){
+  if(s.mode==='practice')return 'Practice session';
+  if(s.mode==='demo')return 'Demo session';
+  return s.status==='running'?'Live session':'Model session';
+}
 function notify(msg){$('#notice').textContent=msg;clearTimeout(noticeTimer);noticeTimer=setTimeout(()=>$('#notice').textContent='',4500);}
 async function api(path,body){
   const res=await fetch('/api/'+path,body===undefined?{}:{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
   const data=await res.json();if(!res.ok)throw Error(data.error||'Request failed');return data;
 }
 function card(c,mini=false){
+  if(!c && mini)return '<span class="card back" aria-label="Hidden card">◇</span>';
   if(!c)return '<span aria-label="Undealt card" class="card empty">◇</span>';
   const rank=c[0]==='T'?'10':c[0], pip=suit[c[1]];
   const content=mini?rank+'<small>'+pip+'</small>':'<span class="rank">'+rank+'</span><span class="pip">'+pip+'</span><span class="bottompip">'+pip+'</span>';
@@ -34,11 +45,11 @@ function renderStage(e){
     if(onClock) status='Acting · '+Math.max(0,Math.floor((Date.now()-session.turnStartedAt)/1000))+' s';
     return `<div class="pod seat${i}${p.folded?' folded':''}${active?' acting':''}">
       <div class="seatbody">${face(p.name)}<div class="info"><div class="playername" title="${esc(p.name)}">${esc(p.name)}</div><div class="stack">${fmt(p.stack)}</div></div>
-      <div class="hole">${p.cards.map(c=>card(c,true)).join('')}</div></div>
+      <div class="hole">${(p.hiddenCount?Array(p.hiddenCount).fill(null):p.cards).map(c=>card(c,true)).join('')}</div></div>
       <div class="seatstatus">${badge?'<b class="posbadge">'+badge+'</b>':''}<span>${esc(status)}</span></div></div>`;
   }).join('');
   const pot=e.type==='result'?e.pots.filter(p=>!p.refund).reduce((s,p)=>s+p.amount,0):e.pot;
-  $('#stage').innerHTML=`<div class="stagebar"><span class="stageid">${icon('table')} Table 01</span><span class="stageview">${icon('eye')} Spectator view</span></div>
+  $('#stage').innerHTML=`<div class="stagebar"><span class="stageid">${icon('table')} Table 01</span><span class="stageview">${icon('eye')} ${session.privateTable?(session.mySeat?'Your seat · '+esc(session.mySeat):'Public view'):'Spectator view'}</span></div>
     <div class="felt" aria-hidden="true"><div class="feltin"></div></div>
     <div class="centerboard"><div class="pot">${icon('layers')}<small>${e.type==='result'?'Awarded':'Pot'}</small><b>${fmt(pot)}</b></div>
     <div class="boardcards">${Array.from({length:5},(_,i)=>card(e.board[i])).join('')}</div><div class="streetlabel">${esc(e.street)}</div></div>${seats}
@@ -47,7 +58,7 @@ function renderStage(e){
   $('#handmetric').textContent=pad(e.hand)+' / '+pad(session.rules.hands);
   $('#gameformat').textContent='No-limit Texas Hold’em · '+(session.rules.format==='duplicate'?'Duplicate deals':'Continuous stacks');
   $('#blinds').textContent=fmt(session.rules.sb)+' / '+fmt(session.rules.sb*2);
-  $('#atTable').textContent=pad(e.players.filter(p=>p.cards.length).length);
+  $('#atTable').textContent=pad(e.players.filter(p=>p.cards.length||p.hiddenCount).length);
 
 }
 function renderFeed(events){
@@ -74,7 +85,14 @@ function renderFeed(events){
 function render(){
   if(!session?.events.length)return;
   const e=session.events[at], events=session.events.slice(0,at+1), total=session.events.length;
-  $('#modeTag').textContent=session.mode==='demo'?'Demo session':session.status==='running'?'Live session':'Model session';
+  $('#modeTag').textContent=sessionLabel(session);
+  $('#download').disabled=!!session.privateTable;
+  renderDecision($('#decision'),session,follow && at===total-1,async payload=>{
+    const id=session.id;
+    if(id===practiceId && practice)await practice.call('move',payload);
+    else await api('sessions/'+id+'/move',payload);
+    if(session.id===id){if(session.turn?.id===payload.turnId)session.turn=null;render();}
+  });
   renderStage(e);renderFeed(events);
   const timed=session.version===VERSION;
   $('#feedclock').textContent=timed?(session.mode==='demo'?'Simulated move times':'Observed move times'):'Move times unavailable in this replay';
@@ -106,12 +124,12 @@ function render(){
     $('#runstatus').innerHTML='<div class="noticebox summary"><strong>Session complete</strong> · '+results.length+' hands · '+leaders.map(esc).join(' and ')+(leaders.length===1?' leads':' share first place')+' with '+(top>0?'+':'')+fmt(top)+' net chips. <button id="bigpot">Largest pot · '+fmt(wonPot(biggest))+' in hand '+biggest.hand+'</button></div>';
     $('#bigpot').onclick=()=>seek(biggest.index);
   }
-  if(session.mode==='models'&&['running','paused'].includes(session.status)&&local&&knownCurrent===session.id){
-    const box=document.createElement('div');box.className='noticebox';box.textContent=session.status==='paused'?'Session paused. '+session.error:'Live session · '+(session.waitingFor||'Dealer')+' is acting.';
+  if(['running','paused'].includes(session.status)&&(knownCurrent===session.id||practiceId===session.id)){
+    const box=document.createElement('div');box.className='noticebox';box.textContent=session.status==='paused'?'Session paused. '+session.error:session.mySeat===session.waitingFor && session.mySeat?'Your turn. Choose a move at the table.':sessionLabel(session)+' · '+(session.waitingFor||'Dealer')+' is acting.';
     const add=(text,fn)=>{const b=document.createElement('button');b.textContent=text;b.onclick=fn;box.append(b);};
-    if(session.status==='paused')add('Retry turn',()=>control('retry'));
+    if(session.status==='paused' && (!session.privateTable || session.mySeat))add('Retry turn',()=>control('retry'));
     if(!follow)add('Follow live',()=>{stopPlay();follow=true;at=session.events.length-1;render();});
-    add('End session',()=>{modal('End this session?','<p class="muted">The dealer will stop accepting moves. Recorded events will stay available for replay.</p><div class="formfoot"><button id="endrun" class="primary">End session</button></div>');$('#endrun').onclick=()=>{$('#dialog').close();control('stop');};});
+    if(!session.privateTable||session.mySeat)add('End session',()=>{modal('End this session?','<p class="muted">The dealer will stop accepting moves. Recorded events will stay available for replay.</p><div class="formfoot"><button id="endrun" class="primary">End session</button></div>');$('#endrun').onclick=()=>{$('#dialog').close();control('stop');};});
     $('#runstatus').append(box);
   }
 }
@@ -135,40 +153,65 @@ async function pick(s,pos=0,watch=false){
 }
 async function poll(gen){
   try{
-    const delta=await api('sessions/'+session.id+'?from='+session.events.length);
+    const delta=await readSession(session.id,session.events.length,session.privateTable);
     if(gen!==generation)return;
-    const {events,...meta}=delta;Object.assign(session,{turnStartedAt:null,waitingFor:null},meta);session.events.push(...events);
+    const {events,replaceHistory,...meta}=delta;
+    for(const key of ['turnStartedAt','waitingFor','privateTable','mySeat','turn'])delete session[key];
+    Object.assign(session,meta);
+    if(replaceHistory)session.events=events;else session.events.push(...events);
     if(follow)at=Math.max(0,session.events.length-1);
     render();
-    if(!['running','paused'].includes(session.status)){await persist(session);return;}
+    if(!['running','paused'].includes(session.status)){await persist(session);
+      if(session.id===practiceId){practice.close();practice=null;practiceId=null;}
+      return;}
   }catch(e){if(gen===generation)notify('Connection interrupted. Reconnecting to the local dealer.');}
   if(gen===generation)pollTimer=setTimeout(()=>poll(gen),1150);
 }
-async function control(action){try{await api('sessions/'+session.id+'/'+action,{});}catch(e){notify(e.message);}}
+async function control(action){try{if(session.id===practiceId && practice)await practice.call(action);else await api('sessions/'+session.id+'/'+action,{});}catch(e){notify(e.message);}}
 async function persist(s){library.set(s.id,s);try{await save(s);}catch{notify('Browser storage unavailable. Export the replay to keep it.');}}
 function showPage(){const archive=page==='archive';$('#archivePage').hidden=!archive;$('#tablePage').hidden=archive;all('[data-go]').forEach(b=>b.classList.toggle('active',b.dataset.go===page));if(archive)renderArchive();}
 async function renderArchive(){
   const entries=new Map(library);
+  if(practiceId && session?.id===practiceId)entries.set(practiceId,session);
   if(local){try{for(const s of await api('sessions'))entries.set(s.id,s);}catch{notify('Local session list unavailable');}}
-  $('#archiveList').innerHTML=[...entries.values()].sort((a,b)=>b.created.localeCompare(a.created)).map(s=>'<button class="archiveitem" data-id="'+esc(s.id)+'">'+icon('replay')+'<div><span>'+esc(s.id===openingId?'Opening table':s.id==='opening-table'?'Opening table (original)':s.mode==='demo'?'Demo session':'Model session')+' · '+esc(s.rules.format==='duplicate'?'Duplicate deals':'No-limit Hold’em')+'</span><small>'+esc(stamp(s))+' · '+s.rules.hands+' hands scheduled · '+esc(s.status)+'</small></div>'+icon('chevron')+'</button>').join('');
-  all('.archiveitem').forEach(b=>b.onclick=async()=>{try{let s=entries.get(b.dataset.id);if(!s.events)s=await api('sessions/'+s.id);await pick(s,0,local&&s.id===knownCurrent);}catch(e){notify(e.message);}});
+  $('#archiveList').innerHTML=[...entries.values()].sort((a,b)=>b.created.localeCompare(a.created)).map(s=>'<button class="archiveitem" data-id="'+esc(s.id)+'">'+icon('replay')+'<div><span>'+esc(s.id===openingId?'Opening table':s.id==='opening-table'?'Opening table (original)':sessionLabel(s))+' · '+esc(s.rules.format==='duplicate'?'Duplicate deals':'No-limit Hold’em')+'</span><small>'+esc(stamp(s))+' · '+s.rules.hands+' hands scheduled · '+esc(s.status)+'</small></div>'+icon('chevron')+'</button>').join('');
+  all('.archiveitem').forEach(b=>b.onclick=async()=>{try{let s=entries.get(b.dataset.id);if(practiceId && s.id!==practiceId)throw Error('End the practice session before opening another recording.');if(!s.events||s.id===practiceId)s=await readSession(s.id);const watch=s.id===knownCurrent||s.id===practiceId;await pick(s,watch?Math.max(s.events.length-1,0):0,watch);}catch(e){notify(e.message);}});
 }
 function newDialog(draft){
-  modal('New session','<form id="newform"><div class="formgrid"><label class="field wide">Players<select name="mode"><option value="demo">Demo · five simulated players</option><option value="models">Live models · configured providers</option></select></label><label class="field wide">Game format<select name="format"><option value="session">Continuous stacks</option><option value="duplicate">Duplicate deals · five seat rotations</option></select></label><label class="field">Hands<input type="number" name="hands" value="12" min="1" max="100" required></label><label class="field">Starting stack<input type="number" name="stack" value="2000" min="10" max="1000000" required></label><label class="field">Small blind<input type="number" name="sb" value="10" min="1" required></label><label class="field">Big blind<input name="bb" value="20" readonly></label></div><p id="newnote" class="formnote"></p><p id="formerror" role="alert"></p><div class="formfoot"><button class="secondary" type="button" id="connections">Players</button><button class="primary" type="submit">Start session</button></div></form>');
+  if(practiceId){notify('End the current practice session before starting another.');return;}
+  modal('New session','<form id="newform"><div class="formgrid"><label class="field wide">Your role<select name="role"><option value="watch">Spectate</option><option value="play">Play a seat</option></select></label><label class="field humanfield" hidden>Your name<input name="humanName" value="You" maxlength="24"></label><label class="field humanfield" hidden>Replace seat<select name="slot"></select></label><label class="field wide">Opponents<select name="mode"><option value="demo">Demo players · no keys required</option><option value="models">Live models · configured providers</option></select></label><label class="field wide">Game format<select name="format"><option value="session">Continuous stacks</option><option value="duplicate">Duplicate deals · five seat rotations</option></select></label><label class="field">Hands<input type="number" name="hands" value="12" min="1" max="100" required></label><label class="field">Starting stack<input type="number" name="stack" value="2000" min="10" max="1000000" required></label><label class="field">Small blind<input type="number" name="sb" value="10" min="1" required></label><label class="field">Big blind<input name="bb" value="20" readonly></label></div><p id="newnote" class="formnote"></p><p id="formerror" role="alert"></p><div class="formfoot"><button class="secondary" type="button" id="connections">Players</button><button class="primary" type="submit">Start session</button></div></form>');
   const form=$('#newform');
-  const note=()=>{$('#newnote').textContent=(form.mode.value==='demo'?'Demo players share one seeded policy. ':local?'Each seat uses its saved model and provider. ':'Live model play runs in the local Poker Bench app. Open http://localhost:4395 after running npm start. ')+(form.format.value==='duplicate'?'Stacks and conversation reset every hand. Each five-hand block rotates one deal through every seat.':'Chips carry over between hands. The dealer button moves each hand.');};
-  if(draft?.mode)for(const name of ['mode','format','hands','stack','sb','bb'])form.elements[name].value=draft[name];
-  form.mode.onchange=note;form.format.onchange=()=>{if(form.format.value==='duplicate')form.hands.value=Math.max(5,Math.ceil(Number(form.hands.value)/5)*5);note();};form.sb.oninput=()=>form.bb.value=Number(form.sb.value)*2;note();
+  const note=()=>{
+    const joined=form.elements.role.value==='play';
+    form.querySelectorAll('.humanfield').forEach(el=>el.hidden=!joined);
+    form.elements.humanName.required=joined;
+    const slot=form.elements.slot.value||NAMES.at(-1);
+    form.elements.slot.innerHTML=NAMES.map(n=>'<option value="'+n+'">'+esc(form.mode.value==='models'?(players[n]?.name||n):n)+'</option>').join('');
+    form.elements.slot.value=slot;
+    if(joined)form.format.value='session';
+    form.format.querySelector('[value=duplicate]').disabled=joined;
+    $('#newnote').textContent=joined?'Play against four opponents. You have 120 seconds per turn. On timeout the dealer checks or folds. '+(!local?'Keep this tab open during practice.':''): (form.mode.value==='demo'?'Demo players share one seeded policy. ':local?'Each seat uses its saved model and provider. ':'Live model play runs in the local Poker Bench app. Open http://localhost:4395 after running npm start. ')+(form.format.value==='duplicate'?'Stacks and conversation reset every hand. Each five-hand block rotates one deal through every seat.':'Chips carry over between hands. The dealer button moves each hand.');};
+  if(draft?.mode)for(const name of ['mode','format','hands','stack','sb','bb','role','humanName'])if(draft[name]!=null)form.elements[name].value=draft[name];
+  form.elements.role.onchange=note;form.mode.onchange=note;form.format.onchange=()=>{if(form.format.value==='duplicate')form.hands.value=Math.max(5,Math.ceil(Number(form.hands.value)/5)*5);note();};form.sb.oninput=()=>form.bb.value=Number(form.sb.value)*2;note();if(draft?.slot)form.elements.slot.value=draft.slot;
   $('#connections').onclick=()=>{
     const draft=Object.fromEntries(new FormData(form));
     configDialog(()=>newDialog(draft));
   };
   form.onsubmit=async ev=>{ev.preventDefault();const btn=form.querySelector('[type=submit]');btn.disabled=true;$('#formerror').textContent='';
     try{const options={format:form.format.value,hands:Number(form.hands.value),stack:Number(form.stack.value),sb:Number(form.sb.value)};
-      if(form.mode.value==='models'){
+      const joined=form.elements.role.value==='play';
+      if(joined)options.human={slot:form.elements.slot.value,name:form.elements.humanName.value.trim()};
+      if(joined && form.mode.value==='demo')options.mode='practice';
+      if(joined && !local && options.mode==='practice'){
+        practice=practiceClient();
+        try{
+          const {id}=await practice.call('start',options);practiceId=id;
+          const s=await readSession(id);await pick(s,Math.max(0,s.events.length-1),true);$('#dialog').close();
+        }catch(error){practice.close();practice=null;practiceId=null;throw error;}
+      }else if(form.mode.value==='models'||joined){
         if(!local)throw Error('Use the local app at http://localhost:4395 for live model play.');
         const {id}=await api('sessions',options);knownCurrent=id;
-        const s=await api('sessions/'+id);await pick(s,0,true);$('#dialog').close();
+        const s=await readSession(id);await pick(s,Math.max(0,s.events.length-1),true);$('#dialog').close();
       }else{const s=await simulate({seed:makeSeed(),options});await persist(s);await pick(s);$('#dialog').close();startPlay();}
     }catch(e){$('#formerror').textContent=e.message;}finally{btn.disabled=false;}};
 }
@@ -181,16 +224,28 @@ function configDialog(afterSave){
 }
 function auditDialog(){
   const s=session;
-  modal('Fairness log','<div class="protocol"><p>'+esc(s.mode==='demo'?'Demo recording. All five seats used the same simulated decision policy.':'Model recording. Each player received its own hole cards, public table state, and the same legal moves.')+'</p>'+(s.betSizing?'<h3>Raise sizes</h3><p>All seats can choose minimum, half-pot, pot, double-pot, or all-in raises when legal. TypeSafe seats play silently.</p>':'')+'<h3>Table clock</h3><p>'+esc(s.version!==VERSION?'This recording predates the table clock.':s.mode==='demo'?'Demo response times come from a reproducible simulation.':'The dealer times each successful request to a tenth of a second, including network and provider latency. Failed attempts and retry pauses are excluded. Recorded time is an observation supplied to replay verification.')+'</p><h3>Dealer protocol</h3><p>Seeded Fisher–Yates shuffle, randomized opening seats, fixed blinds, and an independent rules engine. The dealer commits to the seed before play.</p><h3>Game format</h3><p>'+esc(s.rules.format==='duplicate'?'Duplicate deals. Each block of five hands reuses one deal, rotates players, and resets stacks and chat.':'Continuous stacks. The button rotates and conversation carries between hands.')+'</p><h3>Seed commitment · SHA-256</h3><p><code>'+esc(s.commitment)+'</code></p><h3>Revealed seed</h3><p><code>'+esc(s.seed||'Available when the session ends')+'</code></p><h3>Players</h3><p>'+(s.lineup??NAMES).map(n=>esc(n)+' · '+esc(s.models?.[n]?.model||(s.mode==='demo'?'Demo policy v1':'Unspecified'))).join('<br>')+'</p><h3>Dealer version</h3><p><code>'+esc(s.version)+'</code></p>'+(s.incidents?.length?'<h3>Interrupted decisions</h3><p>'+s.incidents.map(x=>esc(x.error)).join('<br>')+'</p>':'')+'<p id="verification" role="status"></p><div class="formfoot"><button class="primary" id="verify" '+(s.status==='complete'?'':'disabled')+'>Verify replay</button></div></div>');
+  modal('Fairness log','<div class="protocol"><p>'+esc(s.humanName?'Human participant: '+s.humanName+'. The dealer shows public cards and the participant’s own hand during play.':s.mode==='demo'?'Demo recording. All five seats used the same simulated decision policy.':'Model recording. Each player received its own hole cards, public table state, and the same legal moves.')+'</p>'+(s.betSizing?'<h3>Raise sizes</h3><p>All seats can choose minimum, half-pot, pot, double-pot, or all-in raises when legal. TypeSafe seats play silently.</p>':'')+'<h3>Table clock</h3><p>'+esc(s.version!==VERSION?'This recording predates the table clock.':s.mode==='demo'?'Demo response times come from a reproducible simulation.':'The dealer times each successful request to a tenth of a second, including network and provider latency. Failed attempts and retry pauses are excluded. Recorded time is an observation supplied to replay verification.')+'</p><h3>Dealer protocol</h3><p>Seeded Fisher–Yates shuffle, randomized opening seats, fixed blinds, and an independent rules engine. The dealer commits to the seed before play.</p><h3>Game format</h3><p>'+esc(s.rules.format==='duplicate'?'Duplicate deals. Each block of five hands reuses one deal, rotates players, and resets stacks and chat.':'Continuous stacks. The button rotates and conversation carries between hands.')+'</p><h3>Seed commitment · SHA-256</h3><p><code>'+esc(s.commitment)+'</code></p><h3>Revealed seed</h3><p><code>'+esc(s.seed||'Available when the session ends')+'</code></p><h3>Players</h3><p>'+(s.lineup??NAMES).map(n=>esc(n)+' · '+esc(s.models?.[n]?.model||(s.mode==='demo'?'Demo policy v1':'Unspecified'))).join('<br>')+'</p><h3>Dealer version</h3><p><code>'+esc(s.version)+'</code></p>'+(s.incidents?.length?'<h3>Interrupted decisions</h3><p>'+s.incidents.map(x=>esc(x.error)).join('<br>')+'</p>':'')+'<p id="verification" role="status"></p><div class="formfoot"><button class="primary" id="verify" '+(s.status==='complete'?'':'disabled')+'>Verify replay</button></div></div>');
   $('#verify').onclick=async ev=>{ev.target.disabled=true;try{$('#verification').textContent='Verified '+await verify(s)+' events from the revealed seed and recorded moves.';}catch(e){$('#verification').textContent=e.message;}finally{ev.target.disabled=false;}};
 }
-function exportSession(){const url=URL.createObjectURL(new Blob([JSON.stringify(session)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='poker-bench-'+session.id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);}
-paintIcons();$('#settings').onclick=configDialog;$('#new').onclick=newDialog;$('#close').onclick=()=>$('#dialog').close();$('#download').onclick=exportSession;$('#speed').onchange=tick;
+function exportSession(){if(session.privateTable)return;const url=URL.createObjectURL(new Blob([JSON.stringify(session)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='poker-bench-'+session.id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);}
+function themeControl(){
+  const light=document.documentElement.dataset.theme==='light',button=$('#theme');
+  button.innerHTML=icon(light?'moon':'sun');button.title=light?'Use dark theme':'Use light theme';
+  button.setAttribute('aria-label',button.title);
+  document.querySelector('meta[name="theme-color"]').content=light?'#f7f8f8':'#0e1318';
+}
+$('#theme').onclick=()=>{
+  const choice=document.documentElement.dataset.theme==='light'?'dark':'light';
+  document.documentElement.dataset.theme=choice;
+  try{localStorage.setItem('poker-theme',choice);}catch{}
+  themeControl();
+};
+themeControl();paintIcons();$('#settings').onclick=configDialog;$('#new').onclick=newDialog;$('#close').onclick=()=>$('#dialog').close();$('#download').onclick=exportSession;$('#speed').onchange=tick;
 $('#play').onclick=()=>{if(playing){stopPlay();render();}else startPlay();};
 $('#back').onclick=()=>seek(at-1);$('#forward').onclick=()=>seek(at+1);$('#timeline').oninput=e=>seek(Number(e.target.value));
 all('[data-feed]').forEach(b=>b.onclick=()=>{feedType=b.dataset.feed;render();$('#feed').scrollTop=$('#feed').scrollHeight;});
 all('[data-go]').forEach(b=>b.onclick=()=>{location.hash=b.dataset.go;});window.onhashchange=()=>{page=location.hash==='#archive'?'archive':'table';showPage();};
-$('#import').onclick=()=>$('#file').click();$('#file').onchange=async ev=>{try{const file=ev.target.files[0];if(!file)return;if(file.size>100e6)throw Error('Replay exceeds 100 MB.');const s=JSON.parse(await file.text());checkRecord(s);if(s.status==='complete')await verify(s);await persist(s);await pick(s);notify('Replay imported');}catch(e){notify(e.message);}finally{ev.target.value='';}};
+$('#import').onclick=()=>$('#file').click();$('#file').onchange=async ev=>{try{if(practiceId)throw Error('End practice before importing a replay.');const file=ev.target.files[0];if(!file)return;if(file.size>100e6)throw Error('Replay exceeds 100 MB.');const s=JSON.parse(await file.text());checkRecord(s);if(s.status==='complete')await verify(s);await persist(s);await pick(s);notify('Replay imported');}catch(e){notify(e.message);}finally{ev.target.value='';}};
 document.addEventListener('keydown',e=>{if($('#dialog').open||page!=='table'||['INPUT','SELECT','BUTTON','TEXTAREA'].includes(document.activeElement.tagName))return;
   if(e.code==='Space'){e.preventDefault();$('#play').click();}if(e.key==='ArrowLeft')seek(at-1);if(e.key==='ArrowRight')seek(at+1);});
 async function boot(){
@@ -202,4 +257,5 @@ async function boot(){
   page=location.hash==='#archive'?'archive':'table';showPage();
   if(knownCurrent){const s=await api('sessions/'+knownCurrent);if(['running','paused'].includes(s.status)&&page==='table')await pick(s,Math.max(0,s.events.length-1),true);}
 }
+window.addEventListener('beforeunload',e=>{if(practiceId){e.preventDefault();e.returnValue='';}});
 boot().catch(e=>notify('Unable to open the table: '+e.message));

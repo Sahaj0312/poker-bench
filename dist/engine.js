@@ -98,7 +98,7 @@ export function legalFor(s,seat) {
   return legal;
 }
 export function validateMove(move,legal) {
-  if(!move || !Object.hasOwn(legal,move.action)) throw Error('Action outside the legal menu');
+  if(!move || typeof move.action!=='string' || !Object.hasOwn(legal,move.action)) throw Error('Action outside the legal menu');
   if(move.action==='raise' && (!Number.isSafeInteger(move.amount)||move.amount<legal.raise.min||move.amount>legal.raise.max)) throw Error('Raise outside the legal bounds');
   if(move.action==='raise' && legal.raise.options && !legal.raise.options.includes(move.amount))throw Error('Choose a listed raise amount');
   if(typeof move.chat!=='string'||[...move.chat].length>180) throw Error('Invalid table talk');
