@@ -71,3 +71,26 @@ test('duplicate rotations exclude previous chat and discard late replies from ea
   assert.deepEqual(room.messages(2),[]);
   assert.equal(session.tableChat.length,1);
 });
+
+test('a silent check clears only the recovering seat’s warning',async t=>{
+  const failing=new Set(['A','B']);
+  const {room,session,advance}=table(t,name=>{
+    if(failing.has(name)){
+      if(name==='A')throw new DOMException('Request deadline','TimeoutError');
+      throw new SyntaxError('private response text');
+    }
+    return '';
+  });
+  await room.send({id:'first',text:'Hi'});await advance(1000);
+  assert.match(session.chatError,/A missed a chat check because the request timed out/);
+  assert.match(session.chatError,/B missed a chat check because the model returned invalid JSON/);
+  assert.doesNotMatch(session.chatError,/private response text/);
+  failing.delete('A');
+  await room.send({id:'second',text:'Hello again'});await advance(14000);
+  assert.doesNotMatch(session.chatError,/A missed/);
+  assert.match(session.chatError,/B missed/);
+  failing.clear();
+  await room.send({id:'third',text:'Good luck'});await advance(14000);
+  assert.equal(session.chatError,'');
+  assert.equal(session.tableChat.length,3);
+});

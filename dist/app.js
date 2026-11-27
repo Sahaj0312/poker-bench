@@ -140,7 +140,9 @@ function render(){
   const composer=$('#tableChat');
   composer.hidden=!(session.mySeat && Array.isArray(session.tableChat) && ['running','paused'].includes(session.status) && follow && at===total-1);
   composer.querySelector('button').disabled=composer.dataset.sending==='yes';
-  $('#chatstatus').textContent=session.chatError||'';
+  // Older dealers only retained the last failure, even after successful silent checks.
+  const lastFailure=/^(.+) could not check table chat\.$/.exec(session.chatError||'');
+  $('#chatstatus').textContent=lastFailure?'Last reported chat issue for '+lastFailure[1]+'. The dealer checks again automatically.':session.chatError||'';
   const timed=session.version===VERSION;
   $('#feedclock').textContent=timed?(session.mode==='demo'?'Simulated move times':'Observed move times'):'Move times unavailable in this replay';
   const tablePace=$('#speed option[value="table"]');tablePace.disabled=!timed;

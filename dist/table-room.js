@@ -37,6 +37,7 @@ export function tableConversation(session,consider,signal,save=async()=>{}){
   session.chatMode='group';
   const seats=session.lineup.filter(name=>name!==session.humanName && session.models[name]?.kind!=='typesafe')
     .map(name=>({name,timer:null,due:Infinity,depth:Infinity,running:false,nextAllowed:0}));
+  const errors=new Map();
   const duplicate=session.rules.format==='duplicate';
   let writes=Promise.resolve();
   const active=()=>!signal.aborted && ['running','paused'].includes(session.status);
@@ -80,21 +81,32 @@ export function tableConversation(session,consider,signal,save=async()=>{}){
     // Each seat has its own clock. Coalesce messages received while it is thinking.
     seat.nextAllowed=Date.now()+12000;
     const event=session.events.at(-1);
+    let failure='the model request failed';
     try{
       const conversation=transcript(session,event.index).filter(m=>!duplicate || m.hand===event.hand);
       const context={name:seat.name,hand:event.hand,street:event.street,board:event.board,pot:event.pot,
         players:event.players.map(({name,stack,folded,last})=>({name,stack,folded,last})),
         lastEvent:event.text,conversation:conversation.map(({hand,street,speaker,chat})=>({hand,street,speaker,chat}))};
       const answer=await consider(seat.name,context,signal);
-      if(typeof answer!=='string'||[...answer.trim()].length>180)throw Error('Invalid chat response.');
+      if(typeof answer!=='string'||[...answer.trim()].length>180){
+        failure='the model returned an invalid chat message';throw Error(failure);
+      }
+      failure='the dealer could not save the message';
       if(answer.trim() && active() && await post(seat.name,answer.trim(),crypto.randomUUID(),event.hand)){
         // Limit immediate follow-ups. All messages remain visible on the next independent check.
         if(depth<2)notifySeats(seat.name,600,depth+1);
-        session.chatError='';
       }
-    }catch{
-      if(active())session.chatError=seat.name+' could not check table chat.';
+      errors.delete(seat.name);
+    }catch(error){
+      if(active()){
+        if(error?.name==='TimeoutError')failure='the request timed out';
+        else if(error instanceof SyntaxError)failure='the model returned invalid JSON';
+        const status=/^Provider returned HTTP (\d{3})\./.exec(error?.message);
+        if(status)failure='the provider returned HTTP '+status[1];
+        errors.set(seat.name,seat.name+' missed a chat check because '+failure+'.');
+      }
     }finally{
+      session.chatError=errors.size?[...errors.values()].join(' ')+' The dealer will check again.':'';
       seat.running=false;
       const queued=seat.due-Date.now(), nextDepth=seat.depth;
       seat.due=Infinity;seat.depth=Infinity;
