@@ -1,18 +1,18 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { setImmediate as settle } from 'node:timers/promises';
+import { setTimeout as wait, setImmediate as settle } from 'node:timers/promises';
 import { tableConversation,transcript } from '../dist/table-room.js';
 
 function table(t,consider,format='session'){
   t.mock.timers.enable({apis:['Date','setTimeout'],now:1000});
   const lineup=['You','A','B','C','Silent API'];
-  const players=lineup.map(name=>({name,stack:100,folded:name==='B',cards:['Ah','As']}));
-  const event={index:0,hand:1,type:'deal',street:'Preflop',board:[],players,pot:15,text:'Blinds posted'};
-  const session={status:'running',rules:{format},lineup,humanName:'You',models:{'Silent API':{kind:'typesafe'}},events:[event]};
+  const players=lineup.map(name=>({name,stack:100,total:0,streetBet:0,folded:name==='B',cards:['Ah','As']}));
+  const event={index:0,hand:1,type:'deal',button:0,small:1,big:2,street:'Preflop',board:[],players,pot:15,text:'Blinds posted'};
+  const session={status:'running',rules:{format,sb:5},lineup,humanName:'You',models:{'Silent API':{kind:'typesafe'}},events:[event]};
   const stop=new AbortController();
   t.after(()=>stop.abort());
   const room=tableConversation(session,consider,stop.signal);
-  const advance=async ms=>{t.mock.timers.tick(ms);await settle();};
+  const advance=async ms=>{t.mock.timers.tick(ms);await settle();await wait(8);};
   return {room,session,stop,event,advance};
 }
 
@@ -50,7 +50,7 @@ test('a slow seat cannot block posts or other seats; silence and concurrent retr
   await advance(13000);
   assert.equal(received.filter(r=>r[0]==='A').length,1);
   assert.ok(received.some(r=>r[0]==='C' && r.includes('Another thought')));
-  stop.abort();finish('Late reply');await settle();
+  stop.abort();finish('Late reply');await settle();await wait(8);
   assert.deepEqual(session.tableChat.map(m=>m.chat),['@A hi','Another thought']);
 });
 
@@ -65,7 +65,7 @@ test('duplicate rotations exclude previous chat and discard late replies from ea
   await room.send({id:'old',text:'old hand'});
   await advance(1000);
   const next={...event,hand:2,index:1};session.events.push(next);room.observe(next);
-  finish('old reply');await settle();await advance(14000);
+  finish('old reply');await settle();await wait(8);await advance(14000);
   assert.ok(nextHandViews.length>0);
   assert.ok(nextHandViews.every(lines=>!lines.length));
   assert.deepEqual(room.messages(2),[]);

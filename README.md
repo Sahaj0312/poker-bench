@@ -21,11 +21,13 @@ The app opens in dark mode. Use the theme button in the top bar to switch betwee
 1. Select **New session**.
 2. Set **Your role** to **Play a seat**. Enter your name and select the seat to replace.
 3. Choose **Demo players** for practice or **Live models** for your local provider lineup. Only the four model opponents need connections.
-4. Start the session. On your turn, choose a legal move. Use **Table chat** to send a message at any time during live play. Every seat can read the shared conversation. Each chat-capable model decides independently whether to start a conversation, reply to anyone, or stay quiet, even after folding. A mention is public. Human messages and deal events wake the seats. Independent background checks also run about every 35–60 seconds during play. These checks use separate provider calls and public table information. The dealer continues betting while they run. Duplicate deals reset the chat visible to models on each rotation.
+4. Start the session. On your turn, choose a legal move. Use **Table chat** to send a message at any time during live play. Every seat can read the shared conversation. Each chat-capable model decides independently whether to start a conversation, reply to anyone, or stay quiet, even after folding. A mention is public. Messages, betting actions, board cards, and hand results wake the seats. Independent background checks also run about every 35–60 seconds during play. Each check uses a separate provider call with the same seat perspective as a bet. Each seat waits at least 12 seconds between chat checks. The dealer continues betting while they run. Duplicate deals reset the chat visible to models on each rotation.
 
-Human games use continuous stacks. Each turn allows 120 seconds. When time expires, the dealer checks if possible. Otherwise, it folds. The fairness log records the timeout. Model opponents see the same move times and chat as the human player.
+Human games use continuous stacks. Each seat gets 30 seconds per move and an automatic 90-second reserve for the session. Duplicate rotations reset the reserve. When time expires, the dealer checks if possible. Otherwise, it folds. The public hand history and fairness log identify the timeout. Model opponents see the same move times and chat as the human player.
 
-When betting closes with the contenders all-in or already matched against an all-in player, their cards turn face up for the remaining board. At showdown, the table shows the hands and payouts before the next deal. Select **View result** below the table to review any completed hand. Uncontested pots go to the last player without a public reveal. Other local browser profiles receive only public cards. The full replay becomes available when the session ends. The local machine owner can access the dealer files. Use the same browser profile to return to a local seat after a refresh.
+When betting closes with the contenders all-in or already matched against an all-in player, their cards turn face up for the remaining board. At showdown, the table shows the hands and payouts before the next deal. Select **View result** below the table to review any completed hand. At a contested showdown each pot winner shows both cards. Other hands auto-muck unless already face up. A player can select the left, right, or both cards to show at hand end with a betting action. The last selection applies if the player stays in the hand. An uncontested winner can show voluntarily. Other local browser profiles receive only public cards. The full replay becomes available when the session ends. During a human session the local log contains public events. The dealer releases full cards and decision reports when the session completes or its owner selects **End session**. An unexpected dealer exit retains only public history for that human session. The host controls the dealer process. Use the same browser profile to return to a local seat after a refresh.
+
+Select **Sit out next hand** to finish your hand and skip new deals. Select **Return on big blind** to rejoin when the big blind reaches your seat. The dealer skips a missed small blind and advances the big blind to the next eligible seat. After 30 seconds without a seat heartbeat, the dealer marks the seat disconnected at its next five-second check. An open hand keeps its normal clock. **Leave table** vacates the seat, checks or folds the current hand, and lets the other players finish. **End session** stops the whole table.
 
 Hosted practice runs in a browser worker. Keep the tab open until the game ends. The browser saves the finished replay in **Sessions**.
 
@@ -70,22 +72,34 @@ The server listens on loopback. Keys entered in the app are stored as plain text
 
 Use complete five-hand blocks for a duplicate-deal comparison. Use several independent blocks before drawing conclusions about skill. A single session describes one outcome.
 
-The dealer controls the shuffle, legal actions, and payouts. It publishes a SHA-256 seed commitment before the first decision. It reveals the seed when the session ends. Each seat sees its own cards, public events, and previous move times. The spectator can see all dealt cards.
+The dealer controls the shuffle, legal actions, and payouts. It publishes a SHA-256 seed commitment before the first decision. It reveals the seed when the session ends. Each seat sees its own cards, public events, and previous move times. Research spectators can see all cards in a model-only game. A human game withholds private information throughout play, including after the human leaves.
 
 When a lineup includes TypeSafe, every seat receives the same legal raise totals. The dealer offers the minimum raise, half-pot, pot, double-pot, and all-in when legal. It calculates pot fractions after the call and removes duplicate amounts. Other lineups can use any legal whole-chip raise. The fairness log identifies the rule used in each session.
 
-Each live turn has a 120-second deadline. Recorded response time includes provider and network latency. The clock excludes failed attempts and pauses for a retry. Demo response times come from a seeded simulation.
+Each live turn uses the base clock and the remaining reserve. Recorded response time includes provider and network latency. The clock excludes failed attempts and pauses for a retry. Demo response times come from a seeded simulation.
+
+### Table rules
+
+The default table uses play chips, fixed blinds, no rake, and one runout. To collect rake, set a whole percentage and a chip cap in **New session**. The dealer takes whole chips after the flop, applies one cap across the contested pots, and returns uncalled bets in full. The house rules permit talk about the current hand, including a claim about hole cards. GGPoker restricts that speech and uses different time-bank and cash-game rules. [GGPoker security policy](https://ggpoker.com/network/security-ecology-policy/) · [GGPoker house rules](https://legal.ggpoker.com/house-rules/)
+
+## Inspect a decision
+
+Open **Hand replay → Decision records**. Select a player and a hand. Open a betting request or chat check to inspect the seat input, public messages, instructions, returned choice, and dealer timestamps. **View table at this request** moves the replay to the input event. Each new model recording keeps an input fingerprint. The viewer recomputes it from the recorded event prefix, chat prefix, clock, and private note. This preserves the input even if more messages arrived while the model was responding.
+
+Text-capable models can include a short decision basis and a private plan. The next betting or chat request for that seat receives its most recent betting plan. Duplicate rotations clear this memory. These are model-authored explanations. Private inference steps are unavailable. A recorded message establishes that the dealer supplied it. A model can report using it. Establishing its effect on a bet requires a controlled comparison. Producing the report can itself change response time or play.
+
+A choice-only provider supplies a move. Practice policies supply scripted choices. Older sessions contain only the evidence their dealer recorded. The viewer displays an absent explanation explicitly.
 
 ## Replay a session
 
 Use the timeline to select an event. Use the hand menu to jump to a deal. Select **Table pace** to reproduce recorded decision times.
 
 - **Actions** shows bets, timing, showdown cards, and payouts.
-- **Fairness log** checks the seed and rebuilds the game from recorded moves. Live response times are recorded observations.
-- **Export replay** saves a JSON file with cards and chat.
+- **Fairness log** checks the seed and rebuilds the game from recorded moves. New recordings also check a SHA-256 digest over the chat, inputs, reports, and event stream. A stopped recording can check this digest. The digest is stored with the file and carries no independent signature.
+- **Export replay** saves a JSON file with cards, chat, and available decision records.
 - **Sessions** opens a stored session or imports a replay, including older River Room recordings.
 
-Live logs stay in `data/<session-id>.jsonl`. The browser stores demos and imported recordings in IndexedDB. Closing the browser leaves the local dealer running. If a provider fails, the dealer pauses before it changes the game state. Fix the connection and retry the turn, or end the session. A server restart preserves the recorded events as a partial replay.
+Live logs stay in `data/<session-id>.jsonl`. The browser stores demos and imported recordings in IndexedDB. Closing the browser leaves the local dealer running. If a provider returns a configuration or protocol error, the dealer pauses before it changes the game state. Fix the connection and retry the turn, or end the session. A server restart preserves a partial replay. Model-only tables journal pending and returned requests as play proceeds.
 
 ## Run the checks
 

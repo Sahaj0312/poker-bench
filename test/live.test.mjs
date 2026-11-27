@@ -30,13 +30,13 @@ globalThis.fetch=async (url,opt)=>{if(!String(url).startsWith('https://fixture.i
     return Response.json({answers:{move:{choice:v.legal.check?'check':'call'}}});
   }
   if(v.conversation){
-    if(v.cards || v.players.some(p=>p.cards) || v.legal || v.seed)throw Error('Private chat context');
+    if(v.cards.length!==2 || v.players.some(p=>p.cards) || v.legal || v.seed || !v.history.length)throw Error('Private chat context');
     const speak=['Lab 2','Lab 4'].includes(v.name) && v.conversation.some(m=>m.speaker==='Sam') && !v.conversation.some(m=>m.chat==='Hi from '+v.name);
     return Response.json({choices:[{message:{content:JSON.stringify({chat:speak?'Hi from '+v.name:''})}}]});
   }
   if(v.players.some(p=>p.cards)||v.deck||v.seed)throw Error('Private state leaked');
   if(!v.tableClock||v.history.some(e=>e.type==='action'&&!Number.isFinite(e.responseSeconds)))throw Error('Missing public timing');
-  const text=JSON.stringify({action:v.legal.check?'check':'call',amount:0,chat:'Test message'});
+  const text=JSON.stringify({action:v.legal.check?'check':'call',amount:0,chat:'Test message',report:{summary:'Fixture pot odds.',strategy:'Fixture private note for '+v.name},reasoning:'discarded fixture field'});
   return Response.json(b.system?{content:[{type:'text',text}]}:{choices:[{message:{content:text}}]});};`);
   let server;
   const start=async()=>{server=spawn(process.execPath,['--import',mock,path.join(root,'server.mjs')],{env:{...process.env,PORT:String(port),PATH:dir+path.delimiter+process.env.PATH,RIVER_DATA_DIR:path.join(dir,'data')},stdio:['ignore','pipe','inherit']});await once(server.stdout,'data');};
@@ -83,11 +83,21 @@ globalThis.fetch=async (url,opt)=>{if(!String(url).startsWith('https://fixture.i
   for(let i=0;i<300 && (await read(true)).tableChat.length<3;i++)await new Promise(r=>setTimeout(r,50));
   assert.equal((await chat(true)).status,200);
   assert.deepEqual((await read(false)).tableChat.map(m=>m.chat).sort(),['Hi @Lab 2!','Hi from Lab 2','Hi from Lab 4'].sort());
+  const rawDuring=await readFile(path.join(dir,'data',humanId+'.jsonl'),'utf8');
+  const stored=rawDuring.trim().split('\n').map(line=>JSON.parse(line));
+  assert.ok(stored.filter(row=>row.event).every(row=>row.event.players.every(p=>p.cards.length===0)));
+  assert.ok(!rawDuring.includes('Fixture private note'));
+  const publicList=await api('sessions');assert.ok(publicList.every(s=>!s.decisions && !s.events && !s.seed));
+  const presence=(value,owner)=>fetch(origin+'/api/sessions/'+humanId+'/presence',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json',...(owner?{Cookie:cookie}:{})},body:JSON.stringify(value)});
+  assert.equal((await presence({away:true},false)).status,403);
+  assert.equal((await presence({away:true},true)).status,200);
+  assert.equal((await read(true)).seatPresence,'sitting out');
+  await presence({away:false},true);
   let usedTurn=null,finished=null;
   for(let i=0;i<400;i++){
     const view=await read(true);
     if(view.status==='complete'){finished=view;break;}
-    assert.equal(view.mySeat,'Sam');assert.equal(view.seed,undefined);
+    assert.equal(view.decisions,undefined);assert.equal(view.mySeat,'Sam');assert.equal(view.seed,undefined);
     for(const event of view.events)for(const p of event.players){
       if(p.name!=='Sam'&&!event.shown?.some(q=>q.name===p.name))assert.deepEqual(p.cards,[]);
     }
@@ -109,6 +119,22 @@ globalThis.fetch=async (url,opt)=>{if(!String(url).startsWith('https://fixture.i
   assert.equal(finished.tableChat.length,3);
   assert.ok(usedTurn && finished);assert.equal(finished.humanName,'Sam');
   assert.equal(await verify(finished),finished.events.length);
+  assert.ok(finished.decisions.some(d=>d.report?.summary==='Fixture pot odds.'));
+  assert.ok(!JSON.stringify(finished).includes('discarded fixture field'));
+  const {observation}=await import('../dist/observations.js');
+  assert.ok(finished.decisions.filter(d=>d.kind==='chat').some(d=>observation(finished,d).conversation.some(m=>m.id==='hello-1')));
+  for(const d of finished.decisions){
+    const v=observation(finished,d);
+    const {digest}=await import('../dist/engine.js');
+    assert.equal(await digest(JSON.stringify(v)),d.inputDigest);
+    assert.ok(!v.privateStrategy || v.privateStrategy.endsWith(d.name));
+    assert.deepEqual(v.cards,finished.events[d.event].players.find(p=>p.name===d.name).cards);
+    assert.ok(d.returnedAt>=d.dispatchedAt);
+  }
+  const changedChat=structuredClone(finished);changedChat.tableChat[0].chat='Edited';
+  await assert.rejects(verify(changedChat),/evidence differs/);
+  const changedReport=structuredClone(finished);changedReport.decisions[0].output={};
+  await assert.rejects(verify(changedReport),/evidence differs/);
   const restored=await read(true,'?from=3&private=1');
   assert.ok(restored.replaceHistory);assert.equal(restored.events[0].index,0);
   assert.ok(restored.events[0].players.every(p=>p.cards.length===2));

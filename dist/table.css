@@ -164,3 +164,10 @@
 #tableChat button { padding:7px 10px; background:var(--raised); border:1px solid var(--control); border-radius:5px; }
 .decision form:not(:has(.talkfield)) { grid-template-columns:1fr; }
 .decision form:not(:has(.talkfield)) .movelist { grid-column:1; }
+
+.decisionrecords {display:grid;gap:1rem}
+.decisionrecords details {padding:.65rem 0;border-top:1px solid var(--line)}
+.decisionrecords summary {cursor:pointer;font-weight:600}
+.decisionrecords pre {white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;overflow:auto}
+.decisionrecords select,.showchoice select {font:inherit;max-width:100%}
+.showchoice {display:block;font-size:.875rem;margin:.5rem 0}

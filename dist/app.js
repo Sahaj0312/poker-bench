@@ -1,6 +1,7 @@
-import {simulate,makeSeed,NAMES,VERSION,best} from './engine.js';
+import {simulate,makeSeed,NAMES,VERSION,LEGACY_VERSION,best} from './engine.js';
 import {practiceClient,renderDecision} from './play-controls.js';
 import {transcript,lockedRunout} from './table-room.js';
+import {decisionViewer} from './decision-view.js';
 import {chipPile} from './chips.js';
 import {symbol} from './seats.js';
 import {editLineup} from './lineup.js';
@@ -48,8 +49,8 @@ function handRecap(e){
   const hands=e.shown.map(p=>`<li><strong>${esc(p.name)}</strong><span class="recapcards">${p.cards.map(c=>card(c,true)).join('')}</span><span>${esc(rankedHand(p,e.board))}</span></li>`).join('');
   const pots=e.pots.map((p,i)=>`<li>${p.refund?'Uncalled bet returned':i?'Side pot':'Main pot'} · ${fmt(p.amount)} · ${p.winners.map(w=>esc(e.players[w].name)).join(', ')}</li>`).join('');
   const past=session.events.slice(0,at+1).filter(row=>row.type==='result');
-  const menu=past.map(row=>`<option value="${row.index}" ${row.index===e.index?'selected':''}>Hand ${row.hand} · ${row.shown.length?'Showdown':'Won by folds'}</option>`).join('');
-  modal('Hand '+e.hand+' · '+(hands?'Showdown':'Won by folds'),`<div class="recap"><label>Hand result <select id="resultHand">${menu}</select></label><h3>${esc(e.text)}</h3><div class="recapboard">${e.board.map(c=>card(c)).join('')}</div>${hands?`<ul>${hands}</ul>`:'<p>Every other player folded.</p>'}<ul>${pots}</ul></div>`);
+  const menu=past.map(row=>`<option value="${row.index}" ${row.index===e.index?'selected':''}>Hand ${row.hand} · ${row.street==='Showdown'?'Showdown':'Won by folds'}</option>`).join('');
+  modal('Hand '+e.hand+' · '+(e.street==='Showdown'?'Showdown':'Won by folds'),`<div class="recap"><label>Hand result <select id="resultHand">${menu}</select></label><h3>${esc(e.text)}</h3><div class="recapboard">${e.board.map(c=>card(c)).join('')}</div>${hands?`<ul>${hands}</ul>`:'<p>Every other player folded.</p>'}<ul>${pots}</ul></div>`);
   $('#resultHand').onchange=ev=>handRecap(session.events[Number(ev.target.value)]);
 }
 function renderStage(e){
@@ -59,6 +60,7 @@ function renderStage(e){
   const seats=e.players.map((p,i)=>{
     const position=ownIndex<0?i:(i-ownIndex+8)%5;
     const own=p.name===owner;
+    const bank=session.clocks?.[p.name];
     const onClock=follow && at===session.events.length-1 && session.status==='running' && session.waitingFor===p.name && session.turnStartedAt;
     const active=follow && session.status==='running'?onClock:e.seat===i;
     const winner=e.type==='result' && e.pots.some(pot=>!pot.refund && pot.winners.includes(i));
@@ -67,6 +69,7 @@ function renderStage(e){
     let status=p.last || (ready?'':'In hand');
     if((p.last==='Small blind'||p.last==='Big blind') && p.streetBet)status+=' '+fmt(p.streetBet);
     if(Number.isFinite(p.lastResponseSeconds))status+=' · '+responseTime(p.lastResponseSeconds);
+    if(session.humanName===p.name && session.seatPresence==='disconnected' && at===session.events.length-1)status='Disconnected';
     if(onClock)status=(own?'Your turn':'Thinking')+' · '+Math.max(0,Math.floor((Date.now()-session.turnStartedAt)/1000))+' s';
     const revealed=e.shown?.find(q=>q.name===p.name);
     if(revealed)status=rankedHand(revealed,e.board);
@@ -74,7 +77,7 @@ function renderStage(e){
     return `<div class="pod seat${position}${own?' hero':''}${p.folded?' folded':''}${active?' acting':''}${winner?' winner':''}${revealed?' revealed':''}">
       <img class="avatar" src="assets/player-${index<0?i:index}.webp" alt="">
       <div class="hole">${cards.map(c=>card(c,true)).join('')}</div>
-      <div class="seatplate"><div class="playername" title="${esc(p.name)}">${esc(p.name)}</div><div class="stack">${fmt(p.stack)}</div>
+      <div class="seatplate"><div class="playername" title="${esc(p.name)}${Number.isFinite(bank)?' · Time bank '+bank+' s':''}">${esc(p.name)}</div><div class="stack">${fmt(p.stack)}</div>
       ${badge?'<b class="position-tag">'+badge+'</b>':''}</div>
       ${status?'<div class="seatstatus">'+esc(status)+'</div>':''}
       ${chipPile(p.stack,session.rules.stack)}</div>`;
@@ -84,9 +87,11 @@ function renderStage(e){
     <div class="felt" aria-hidden="true"></div>
     <div class="centerboard">${e.type==='result'?`<div class="winnertext">${esc(e.text)}</div>`:'<div class="feltmark" aria-hidden="true">Poker Bench</div>'}
     ${ready?'<div class="streetlabel">Waiting for the deal</div>':`<div class="pot">${e.type==='result'?'':chipPile(e.pot,session.rules.stack)}<small>${e.type==='result'?'Awarded':'Total pot'}</small><b>${fmt(pot)}</b></div>
-    <div class="boardcards">${Array.from({length:5},(_,i)=>card(e.board[i])).join('')}</div><div class="streetlabel">${e.type==='result'&&!e.shown.length?'Won by folds':!ready && lockedRunout(e)?'All-in runout':esc(e.street)}</div>`}</div>${seats}
+    <div class="boardcards">${Array.from({length:5},(_,i)=>card(e.board[i])).join('')}</div><div class="streetlabel">${e.type==='result'&&e.street!=='Showdown'?'Won by folds':!ready && lockedRunout(e)?'All-in runout':esc(e.street)}</div>`}</div>${seats}
     ${ready?'':`<button id="audit" class="stageaudit">${icon('shield')} Fairness log</button>`}`;
   if(!ready)$('#audit').onclick=auditDialog;
+  $('#decisions').hidden=ready;
+  $('#decisions').onclick=()=>{modal('Decision records','<div class="decisionrecords"></div>');decisionViewer(session,at,$('.decisionrecords'),index=>{$('#dialog').close();seek(index);});};
   const result=ready?null:session.events.slice(0,at+1).findLast(x=>x.type==='result');
   const last=$('#lastHand');last.hidden=!result;
   if(result){last.textContent='Hand '+result.hand+' · '+result.text+' · View result';last.onclick=()=>handRecap(result);}
@@ -143,7 +148,7 @@ function render(){
   // Older dealers only retained the last failure, even after successful silent checks.
   const lastFailure=/^(.+) could not check table chat\.$/.exec(session.chatError||'');
   $('#chatstatus').textContent=lastFailure?'Last reported chat issue for '+lastFailure[1]+'. The dealer checks again automatically.':session.chatError||'';
-  const timed=session.version===VERSION;
+  const timed=session.version!==LEGACY_VERSION;
   $('#feedclock').textContent=timed?(session.mode==='demo'?'Simulated move times':'Observed move times'):'Move times unavailable in this replay';
   const tablePace=$('#speed option[value="table"]');tablePace.disabled=!timed;
   if(!timed && $('#speed').value==='table')$('#speed').value='1';
@@ -176,9 +181,15 @@ function render(){
   if(['running','paused'].includes(session.status)&&(knownCurrent===session.id||practiceId===session.id)){
     const box=document.createElement('div');box.className='noticebox';box.textContent=session.status==='paused'?'Session paused. '+session.error:session.mySeat && follow?'':sessionLabel(session)+' · '+(session.waitingFor||'Dealer')+' is acting.';
     const add=(text,fn)=>{const b=document.createElement('button');b.textContent=text;b.onclick=fn;box.append(b);};
-    if(session.status==='paused' && (!session.privateTable || session.mySeat))add('Retry turn',()=>control('retry'));
+    if(session.status==='paused' && (!session.privateTable || session.mySeat || session.canManage))add('Retry turn',()=>control('retry'));
+    if(session.mySeat && session.auditVersion===1){
+      const away=session.seatPresence==='sitting out';
+      if(away)box.append(document.createTextNode('Sitting out from the next deal. '));
+      add('Leave table',()=>{modal('Leave your seat?','<p>The dealer will check or fold your current hand and deal future hands to the remaining players.</p><button class="primary" id="leaveSeat">Leave seat</button>');$('#leaveSeat').onclick=()=>{control('leave');$('#dialog').close();};});
+      add(away?'Return on big blind':'Sit out next hand',()=>control('presence',{away:!away}));
+    }
     if(!follow)add('Follow live',()=>{stopPlay();follow=true;at=session.events.length-1;render();});
-    if(!session.privateTable||session.mySeat)add('End session',()=>{modal('End this session?','<p class="muted">The dealer will stop accepting moves. Recorded events will stay available for replay.</p><div class="formfoot"><button id="endrun" class="primary">End session</button></div>');$('#endrun').onclick=()=>{$('#dialog').close();control('stop');};});
+    if(!session.privateTable||session.mySeat||session.canManage)add('End session',()=>{modal('End this session?','<p class="muted">The dealer will stop accepting moves. Recorded events will stay available for replay.</p><div class="formfoot"><button id="endrun" class="primary">End session</button></div>');$('#endrun').onclick=()=>{$('#dialog').close();control('stop');};});
     $('#runstatus').append(box);
   }
 }
@@ -206,7 +217,7 @@ async function poll(gen){
     const delta=await readSession(session.id,session.events.length,session.privateTable);
     if(gen!==generation)return;
     const {events,replaceHistory,...meta}=delta;
-    for(const key of ['turnStartedAt','waitingFor','privateTable','mySeat','turn'])delete session[key];
+    for(const key of ['turnStartedAt','waitingFor','privateTable','mySeat','canManage','turn'])delete session[key];
     Object.assign(session,meta);
     if(replaceHistory)session.events=events;else session.events.push(...events);
     if(follow){
@@ -223,7 +234,7 @@ async function poll(gen){
   }catch(e){if(gen===generation)notify('Connection interrupted. Reconnecting to the local dealer.');}
   if(gen===generation)pollTimer=setTimeout(()=>poll(gen),1150);
 }
-async function control(action){try{if(session.id===practiceId && practice)await practice.call(action);else await api('sessions/'+session.id+'/'+action,{});}catch(e){notify(e.message);}}
+async function control(action,value={}){try{if(session.id===practiceId && practice)await practice.call(action,value);else await api('sessions/'+session.id+'/'+action,value);}catch(e){notify(e.message);}}
 async function persist(s){library.set(s.id,s);try{await save(s);}catch{notify('Browser storage unavailable. Export the replay to keep it.');}}
 function showPage(){const archive=page==='archive';$('#archivePage').hidden=!archive;$('#tablePage').hidden=archive;all('[data-go]').forEach(b=>b.classList.toggle('active',b.dataset.go===page));if(archive)renderArchive();}
 async function renderArchive(){
@@ -244,7 +255,7 @@ function showOpenSeat(){
   const models=Object.fromEntries(NAMES.map((slot,i)=>[lineup[i],slot===human.slot?'Your seat':players[slot].model]));
   session={status:'ready',mySeat:human.name,privateTable:true,rules,lineup,models,events:[]};
   renderStage({players:lineup.map(name=>({name,cards:[],stack:rules.stack})),board:[],type:'waiting',pot:0});
-  $('#modeTag').textContent='Open table';$('#feedclock').textContent='120 seconds per turn';
+  $('#modeTag').textContent='Open table';$('#feedclock').textContent='30 seconds per turn + 90-second bank';
   $('#tableChat').hidden=true;$('#feed').replaceChildren();$('#chatcount').textContent='5 players';$('#decision').hidden=true;
   $('#runstatus').replaceChildren();$('.ledger').hidden=true;$('#replayPanel').hidden=true;
   const entry=$('#seatEntry');entry.hidden=false;
@@ -254,7 +265,7 @@ function showOpenSeat(){
 }
 function newDialog(draft){
   if(practiceId){notify('End the current practice session before starting another.');return;}
-  modal('New session','<form id="newform"><div class="formgrid"><label class="field wide">Your role<select name="role"><option value="watch">Spectate</option><option value="play">Play a seat</option></select></label><label class="field humanfield" hidden>Your name<input name="humanName" value="You" maxlength="24"></label><label class="field humanfield" hidden>Replace seat<select name="slot"></select></label><label class="field wide">Opponents<select name="mode"><option value="demo">Demo players · no keys required</option><option value="models">Live models · configured providers</option></select></label><label class="field wide">Game format<select name="format"><option value="session">Continuous stacks</option><option value="duplicate">Duplicate deals · five seat rotations</option></select></label><label class="field">Hands<input type="number" name="hands" value="12" min="1" max="100" required></label><label class="field">Starting stack<input type="number" name="stack" value="2000" min="10" max="1000000" required></label><label class="field">Small blind<input type="number" name="sb" value="10" min="1" required></label><label class="field">Big blind<input name="bb" value="20" readonly></label></div><p id="newnote" class="formnote"></p><p id="formerror" role="alert"></p><div class="formfoot"><button class="secondary" type="button" id="connections">Players</button><button class="primary" type="submit">Start session</button></div></form>');
+  modal('New session','<form id="newform"><div class="formgrid"><label class="field wide">Your role<select name="role"><option value="watch">Spectate</option><option value="play">Play a seat</option></select></label><label class="field humanfield" hidden>Your name<input name="humanName" value="You" maxlength="24"></label><label class="field humanfield" hidden>Replace seat<select name="slot"></select></label><label class="field wide">Opponents<select name="mode"><option value="demo">Demo players · no keys required</option><option value="models">Live models · configured providers</option></select></label><label class="field wide">Game format<select name="format"><option value="session">Continuous stacks</option><option value="duplicate">Duplicate deals · five seat rotations</option></select></label><label class="field">Hands<input type="number" name="hands" value="12" min="1" max="100" required></label><label class="field">Starting stack<input type="number" name="stack" value="2000" min="10" max="1000000" required></label><label class="field">Small blind<input type="number" name="sb" value="10" min="1" required></label><label class="field">Big blind<input name="bb" value="20" readonly></label><label class="field">Rake (%)<input type="number" name="rakePercent" value="0" min="0" max="10" step="1"></label><label class="field">Rake cap (chips)<input type="number" name="rakeCap" value="20" min="1" step="1"></label></div><p id="newnote" class="formnote"></p><p id="formerror" role="alert"></p><div class="formfoot"><button class="secondary" type="button" id="connections">Players</button><button class="primary" type="submit">Start session</button></div></form>');
   const form=$('#newform');
   const note=()=>{
     const joined=form.elements.role.value==='play';
@@ -265,15 +276,15 @@ function newDialog(draft){
     form.elements.slot.value=slot;
     if(joined)form.format.value='session';
     form.format.querySelector('[value=duplicate]').disabled=joined;
-    $('#newnote').textContent=joined?'Play against four opponents. You have 120 seconds per turn. On timeout the dealer checks or folds. '+(!local?'Keep this tab open during practice.':''): (form.mode.value==='demo'?'Demo players share one seeded policy. ':local?'Each seat uses its saved model and provider. ':'Live model play runs in the local Poker Bench app. Open http://localhost:4395 after running npm start. ')+(form.format.value==='duplicate'?'Stacks and conversation reset every hand. Each five-hand block rotates one deal through every seat.':'Chips carry over between hands. The dealer button moves each hand.');};
-  if(draft?.mode)for(const name of ['mode','format','hands','stack','sb','bb','role','humanName'])if(draft[name]!=null)form.elements[name].value=draft[name];
+    $('#newnote').textContent=joined?'Play against four opponents. Each seat has 30 seconds per turn and a shared-across-turns reserve of 90 seconds. On timeout the dealer checks or folds. '+(!local?'Keep this tab open during practice.':''): (form.mode.value==='demo'?'Demo players share one seeded policy. ':local?'Each seat uses its saved model and provider. ':'Live model play runs in the local Poker Bench app. Open http://localhost:4395 after running npm start. ')+(form.format.value==='duplicate'?'Stacks and conversation reset every hand. Each five-hand block rotates one deal through every seat.':'Chips carry over between hands. The dealer button moves each hand.');};
+  if(draft?.mode)for(const name of ['mode','format','hands','stack','sb','bb','rakePercent','rakeCap','role','humanName'])if(draft[name]!=null)form.elements[name].value=draft[name];
   form.elements.role.onchange=note;form.mode.onchange=note;form.format.onchange=()=>{if(form.format.value==='duplicate')form.hands.value=Math.max(5,Math.ceil(Number(form.hands.value)/5)*5);note();};form.sb.oninput=()=>form.bb.value=Number(form.sb.value)*2;note();if(draft?.slot)form.elements.slot.value=draft.slot;
   $('#connections').onclick=()=>{
     const draft=Object.fromEntries(new FormData(form));
     configDialog(()=>newDialog(draft));
   };
   form.onsubmit=async ev=>{ev.preventDefault();const btn=form.querySelector('[type=submit]');btn.disabled=true;$('#formerror').textContent='';
-    try{const options={format:form.format.value,hands:Number(form.hands.value),stack:Number(form.stack.value),sb:Number(form.sb.value)};
+    try{const options={format:form.format.value,hands:Number(form.hands.value),stack:Number(form.stack.value),sb:Number(form.sb.value),rakePercent:Number(form.rakePercent.value),rakeCap:Number(form.rakeCap.value)};
       const joined=form.elements.role.value==='play';
       if(joined)options.human={slot:form.elements.slot.value,name:form.elements.humanName.value.trim()};
       if(joined && form.mode.value==='demo')options.mode='practice';
@@ -298,8 +309,8 @@ function configDialog(afterSave){
 }
 function auditDialog(){
   const s=session;
-  modal('Fairness log','<div class="protocol"><p>'+esc(s.humanName?'Human participant: '+s.humanName+'. The dealer shows public cards and the participant’s own hand during play.':s.mode==='demo'?'Demo recording. All five seats used the same simulated decision policy.':'Model recording. Each player received its own hole cards, public table state, and the same legal moves.')+'</p>'+(s.chatMode==='group'?'<h3>Group chat</h3><p>Every chat-capable seat can open a conversation, answer any player, or stay silent. Off-turn decisions use the public table and shared chat. Each seat has its own clock, with at least 12 seconds between chat checks.</p>':'')+(s.betSizing?'<h3>Raise sizes</h3><p>All seats can choose minimum, half-pot, pot, double-pot, or all-in raises when legal. TypeSafe seats play silently.</p>':'')+'<h3>Table clock</h3><p>'+esc(s.version!==VERSION?'This recording predates the table clock.':s.mode==='demo'?'Demo response times come from a reproducible simulation.':'The dealer times each successful request to a tenth of a second, including network and provider latency. Failed attempts and retry pauses are excluded. Recorded time is an observation supplied to replay verification.')+'</p><h3>Dealer protocol</h3><p>Seeded Fisher–Yates shuffle, randomized opening seats, fixed blinds, and an independent rules engine. The dealer commits to the seed before play.</p><h3>Game format</h3><p>'+esc(s.rules.format==='duplicate'?'Duplicate deals. Each block of five hands reuses one deal, rotates players, and resets stacks and chat.':'Continuous stacks. The button rotates and conversation carries between hands.')+'</p><h3>Seed commitment · SHA-256</h3><p><code>'+esc(s.commitment)+'</code></p><h3>Revealed seed</h3><p><code>'+esc(s.seed||'Available when the session ends')+'</code></p><h3>Players</h3><p>'+(s.lineup??NAMES).map(n=>esc(n)+' · '+esc(s.models?.[n]?.model||(s.mode==='demo'?'Demo policy v1':'Unspecified'))).join('<br>')+'</p><h3>Dealer version</h3><p><code>'+esc(s.version)+'</code></p>'+(s.incidents?.length?'<h3>Interrupted decisions</h3><p>'+s.incidents.map(x=>esc(x.error)).join('<br>')+'</p>':'')+'<p id="verification" role="status"></p><div class="formfoot"><button class="primary" id="verify" '+(s.status==='complete'?'':'disabled')+'>Verify replay</button></div></div>');
-  $('#verify').onclick=async ev=>{ev.target.disabled=true;try{$('#verification').textContent='Verified '+await verify(s)+' events from the revealed seed and recorded moves.';}catch(e){$('#verification').textContent=e.message;}finally{ev.target.disabled=false;}};
+  modal('Fairness log','<div class="protocol"><p>'+esc(s.humanName?'Human participant: '+s.humanName+'. The dealer shows public cards and the participant’s own hand during play.':s.mode==='demo'?'Demo recording. All five seats used the same simulated decision policy.':'Model recording. Each player received its own hole cards, public table state, and the same legal moves.')+'</p>'+(s.chatMode==='group'?'<h3>Group chat</h3><p>Every chat-capable seat can open a conversation, answer any player, or stay silent. '+(s.auditVersion===1?'Off-turn decisions receive the same private cards, public history, and private strategy note as betting decisions.':'Off-turn decisions use the public table and shared chat.')+' Each seat has its own clock, with at least 12 seconds between chat checks.</p>':'')+(s.betSizing?'<h3>Raise sizes</h3><p>All seats can choose minimum, half-pot, pot, double-pot, or all-in raises when legal. TypeSafe seats play silently.</p>':'')+'<h3>Table clock</h3><p>'+esc(s.version===LEGACY_VERSION?'This recording predates the table clock.':s.mode==='demo'?'Demo response times come from a reproducible simulation.':'The dealer times each successful request to a tenth of a second, including network and provider latency. Failed attempts and retry pauses are excluded. Recorded time is an observation supplied to replay verification.')+'</p><h3>Dealer protocol</h3><p>Seeded Fisher–Yates shuffle, randomized opening seats, fixed blinds, and an independent rules engine. The dealer commits to the seed before play.</p>'+(s.auditVersion===1?'<p>Each seat has 30 seconds per turn and a 90-second session reserve. A returning seat waits for its big blind. Chat allows claims about the current hand. '+(s.rules.rakePercent?esc(s.rules.rakePercent)+'% rake after the flop, capped at '+esc(s.rules.rakeCap)+' chips.':'The table takes no rake.')+'</p>':'')+'<h3>Game format</h3><p>'+esc(s.rules.format==='duplicate'?'Duplicate deals. Each block of five hands reuses one deal, rotates players, and resets stacks and chat.':'Continuous stacks. The button rotates and conversation carries between hands.')+'</p><h3>Seed commitment · SHA-256</h3><p><code>'+esc(s.commitment)+'</code></p><h3>Revealed seed</h3><p><code>'+esc(s.seed||'Available when the session ends')+'</code></p><h3>Players</h3><p>'+(s.lineup??NAMES).map(n=>esc(n)+' · '+esc(s.models?.[n]?.model||(s.mode==='demo'?'Demo policy v1':'Unspecified'))).join('<br>')+'</p><h3>Dealer version</h3><p><code>'+esc(s.version)+'</code></p>'+(s.incidents?.length?'<h3>Interrupted decisions</h3><p>'+s.incidents.map(x=>esc(x.error)).join('<br>')+'</p>':'')+'<p id="verification" role="status"></p><div class="formfoot"><button class="primary" id="verify" '+(s.status==='complete'||(s.status==='stopped'&&s.evidenceDigest)?'':'disabled')+'>Verify replay</button></div></div>');
+  $('#verify').onclick=async ev=>{ev.target.disabled=true;try{$('#verification').textContent='Verified '+await verify(s)+(s.status==='stopped'?' recorded events in the stopped session.':' events from the revealed seed and recorded moves.');}catch(e){$('#verification').textContent=e.message;}finally{ev.target.disabled=false;}};
 }
 function exportSession(){if(session.privateTable)return;const url=URL.createObjectURL(new Blob([JSON.stringify(session)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='poker-bench-'+session.id+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);}
 function themeControl(){
@@ -336,7 +347,7 @@ $('#tableChat').onsubmit=async ev=>{
 $('#back').onclick=()=>seek(at-1);$('#forward').onclick=()=>seek(at+1);$('#timeline').oninput=e=>seek(Number(e.target.value));
 all('[data-feed]').forEach(b=>b.onclick=()=>{feedType=b.dataset.feed;render();$('#feed').scrollTop=$('#feed').scrollHeight;});
 all('[data-go]').forEach(b=>b.onclick=()=>{location.hash=b.dataset.go;});window.onhashchange=()=>{page=location.hash==='#archive'?'archive':'table';showPage();};
-$('#import').onclick=()=>$('#file').click();$('#file').onchange=async ev=>{try{if(practiceId)throw Error('End practice before importing a replay.');const file=ev.target.files[0];if(!file)return;if(file.size>100e6)throw Error('Replay exceeds 100 MB.');const s=JSON.parse(await file.text());checkRecord(s);if(s.status==='complete')await verify(s);await persist(s);await pick(s);notify('Replay imported');}catch(e){notify(e.message);}finally{ev.target.value='';}};
+$('#import').onclick=()=>$('#file').click();$('#file').onchange=async ev=>{try{if(practiceId)throw Error('End practice before importing a replay.');const file=ev.target.files[0];if(!file)return;if(file.size>100e6)throw Error('Replay exceeds 100 MB.');const s=JSON.parse(await file.text());checkRecord(s);if(s.status==='complete'||s.evidenceDigest)await verify(s);await persist(s);await pick(s);notify('Replay imported');}catch(e){notify(e.message);}finally{ev.target.value='';}};
 document.addEventListener('keydown',e=>{if($('#dialog').open||!session?.events?.length||page!=='table'||['INPUT','SELECT','BUTTON','TEXTAREA'].includes(document.activeElement.tagName))return;
   if(e.code==='Space'){e.preventDefault();$('#play').click();}if(e.key==='ArrowLeft')seek(at-1);if(e.key==='ArrowRight')seek(at+1);});
 async function boot(){

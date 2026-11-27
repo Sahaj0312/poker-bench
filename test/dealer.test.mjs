@@ -89,7 +89,7 @@ test('every seat sees the full observed history, its own prior hands and only pu
         if(e.type==='board')assert.ok(e.board.length>=3);
         if(e.type==='deal')assert.ok(e.startingStacks.every(p=>!('cards' in p)));
         if(e.type==='result'){
-          assert.equal(e.shown.length,4);
+          assert.ok(e.shown.length>=1 && e.shown.length<=4);
           assert.ok(e.shown.every(p=>p.name!==foldedByHand.get(e.hand)));
         }
       }

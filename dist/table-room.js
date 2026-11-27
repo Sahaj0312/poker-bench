@@ -1,10 +1,6 @@
-// No more betting is possible once the only funded contender has matched all live bets.
-export function lockedRunout(event){
-  const live=event.players.filter(p=>!p.folded);
-  if(event.type==='result'||live.length<2)return false;
-  const funded=live.filter(p=>p.stack>0);
-  return !funded.length || (funded.length===1 && live.every(p=>p.streetBet<=funded[0].streetBet));
-}
+import {recordDecision} from './observations.js';
+import {lockedRunout,transcript} from './table-state.js';
+export {lockedRunout,transcript};
 
 export async function showHandEnd(event,rules,signal){
   let delay=0;
@@ -19,27 +15,15 @@ export async function showHandEnd(event,rules,signal){
   });
 }
 
-export function transcript(session,through){
-  const lines=[];
-  for(const e of session.events){
-    if(e.index>through)break;
-    if(e.chat)lines.push({index:e.index,speaker:e.speaker,chat:e.chat,hand:e.hand,street:e.street,responseSeconds:e.responseSeconds});
-  }
-  for(const m of session.tableChat||[]){
-    if(m.index>through)break;
-    lines.push(m);
-  }
-  return lines.sort((a,b)=>a.index-b.index);
-}
-
 export function tableConversation(session,consider,signal,save=async()=>{}){
-  session.tableChat=[];
+  session.tableChat=[];session.decisions??=[];
   session.chatMode='group';
   const seats=session.lineup.filter(name=>name!==session.humanName && session.models[name]?.kind!=='typesafe')
     .map(name=>({name,timer:null,due:Infinity,depth:Infinity,running:false,nextAllowed:0}));
   const errors=new Map();
   const duplicate=session.rules.format==='duplicate';
   let writes=Promise.resolve();
+  const pending=new Set();
   const active=()=>!signal.aborted && ['running','paused'].includes(session.status);
 
   // Serialize human and model posts so disk, replay and every reader see the same order.
@@ -49,7 +33,7 @@ export function tableConversation(session,consider,signal,save=async()=>{}){
       if(session.tableChat.some(m=>m.id===id))return false;
       const e=session.events.at(-1);
       if(duplicate && hand!==undefined && hand!==e.hand)return false;
-      const message={id,index:e.index,hand:e.hand,street:e.street,speaker,chat};
+      const message={id,sentAt:Date.now(),index:e.index,hand:e.hand,street:e.street,speaker,chat};
       await save(message);
       session.tableChat.push(message);
       return true;
@@ -72,10 +56,16 @@ export function tableConversation(session,consider,signal,save=async()=>{}){
     for(const seat of seats)if(seat.name!==except)schedule(seat,delay+Math.random()*400,depth);
   }
 
-  async function think(seat){
+  function think(seat){
+    const task=check(seat);pending.add(task);task.finally(()=>pending.delete(task));
+  }
+
+  async function check(seat){
     const depth=seat.depth;
     seat.depth=Infinity;seat.due=Infinity;
     if(!active())return;
+    const player=session.events.at(-1).players.find(p=>p.name===seat.name);
+    if(player && !player.stack && !player.total && (player.last==='Out'||session.events.at(-1).type==='result'))return;
     if(session.status==='paused'){schedule(seat,35000,0);return;}
     seat.running=true;
     // Each seat has its own clock. Coalesce messages received while it is thinking.
@@ -83,16 +73,13 @@ export function tableConversation(session,consider,signal,save=async()=>{}){
     const event=session.events.at(-1);
     let failure='the model request failed';
     try{
-      const conversation=transcript(session,event.index).filter(m=>!duplicate || m.hand===event.hand);
-      const context={name:seat.name,hand:event.hand,street:event.street,board:event.board,pot:event.pot,
-        players:event.players.map(({name,stack,folded,last})=>({name,stack,folded,last})),
-        lastEvent:event.text,conversation:conversation.map(({hand,street,speaker,chat})=>({hand,street,speaker,chat}))};
-      const answer=await consider(seat.name,context,signal);
+      const messageId=crypto.randomUUID();
+      const answer=await recordDecision(session,seat.name,'chat',null,view=>consider(seat.name,view,signal),signal,messageId);
       if(typeof answer!=='string'||[...answer.trim()].length>180){
         failure='the model returned an invalid chat message';throw Error(failure);
       }
       failure='the dealer could not save the message';
-      if(answer.trim() && active() && await post(seat.name,answer.trim(),crypto.randomUUID(),event.hand)){
+      if(answer.trim() && active() && await post(seat.name,answer.trim(),messageId,event.hand)){
         // Limit immediate follow-ups. All messages remain visible on the next independent check.
         if(depth<2)notifySeats(seat.name,600,depth+1);
       }
@@ -126,11 +113,12 @@ export function tableConversation(session,consider,signal,save=async()=>{}){
     observe(event){
       if(event.type==='deal')notifySeats(null,1200+Math.random()*2600);
       else if(event.chat)notifySeats(event.speaker,350);
+      else if(['board','result','action'].includes(event.type))notifySeats(event.speaker,1000);
     },
     messages(hand){
       return session.tableChat.filter(m=>!duplicate || m.hand===hand);
     },
-    flush:()=>writes
+    flush:async()=>{await Promise.allSettled([...pending]);await writes;}
   };
 }
 

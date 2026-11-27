@@ -2,11 +2,15 @@ import http from 'node:http';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { simulate,makeSeed,defaults,NAMES,checkLineup,demoPolicy } from './dist/engine.js';
+import { simulate,makeSeed,defaults,NAMES,SYSTEM,checkLineup,demoPolicy } from './dist/engine.js';
 import { chooseSeat,HumanSeat,recordTimeout,sessionView } from './dist/human-seat.js';
 import { isLoopback } from './dist/connections.js';
-import { baseConfig,providerMove,providerChat } from './providers.mjs';
+import { baseConfig,providerMove,providerChat,CHAT_SYSTEM } from './providers.mjs';
 import { tableConversation, practiceReply, showHandEnd } from './dist/table-room.js';
+import {CHOICE_SYSTEM} from './dist/provider-input.js';
+import {recordDecision,setDecisionJournal} from './dist/observations.js';
+import {initClocks,seatPresence,spendBank,BASE_SECONDS} from './dist/seat-clock.js';
+import {evidenceDigest} from './dist/recordings.js';
 const root=path.dirname(fileURLToPath(import.meta.url));
 const data=process.env.RIVER_DATA_DIR||path.join(root,'data');
 await fs.mkdir(data,{recursive:true,mode:0o700});
@@ -47,14 +51,21 @@ async function load(id){
   if(!/^[0-9a-f-]{36}$/.test(id))throw Error('Unknown session');
   const lines=(await fs.readFile(filename(id),'utf8')).split('\n');
   const session=JSON.parse(lines.shift()).meta;session.events=[];session.status='interrupted';
+  const attempts=new Map();
   for(const line of lines.filter(Boolean)){
     let row;try{row=JSON.parse(line);}catch{break;}
     if(row.chat)(session.tableChat??=[]).push(row.chat);
-    if(row.event)session.events.push(row.event);if(row.finish)Object.assign(session,row.finish);
+    if(row.receipt)attempts.set(row.receipt.id,row.receipt);
+    if(row.event){
+      session.events.push(row.event);
+      if(row.publishedAt)(session.eventTimes??=[])[row.event.index]=row.publishedAt;
+    }
+    if(row.finish)Object.assign(session,row.finish);
   }
+  if(session.status==='interrupted' && attempts.size)session.decisions=[...attempts.values()];
   return session;
 }
-let human=null,ownerKey=null,room=null;
+let human=null,ownerKey=null,room=null,presence=null;
 const ownsSeat=req=>!!ownerKey && (req.headers.cookie||'').split(';').some(c=>c.trim()==='pokerSeat='+ownerKey);
 async function run(options,players,mode,humanName){
   const seed=makeSeed(), id=crypto.randomUUID();
@@ -72,46 +83,83 @@ async function run(options,players,mode,humanName){
     const slot=slots.get(name), frozen=players[slot], updated=config()[slot];
     return updated.url===frozen.url && updated.kind===frozen.kind?{...frozen,key:updated.key}:frozen;
   };
-  task=simulate({id,seed,options,mode,models,lineup,
+  let writes=Promise.resolve(),writeError;
+  function log(row){
+    const snapshot=structuredClone(row);
+    writes=writes.then(()=>append(id,snapshot)).catch(error=>{writeError=error;});
+    return writes.then(()=>{if(writeError)throw writeError;});
+  }
+  async function finish(status){
+    const s=current;
+    stop.abort();await room.flush();
+    delete s.turnStartedAt;delete s.waitingFor;s.status=status;
+    const released=!humanName || ['complete','stopped'].includes(status);
+    if(released)s.seed=seed;
+    if(released)s.evidenceDigest=await evidenceDigest(s);
+    const saved={status,incidents:s.incidents,clocks:s.clocks,seatPresence:s.seatPresence,presenceEvents:s.presenceEvents,eventTimes:s.eventTimes,availabilityByHand:s.availabilityByHand};
+    if(released)Object.assign(saved,{seed,decisions:s.decisions,evidenceDigest:s.evidenceDigest,...(humanName?{events:s.events}:{})});
+    await log({finish:saved});
+    delete s.releasing;
+  }
+  task=simulate({id,seed,options,mode,models,lineup,availability:()=>presence?.absent()||[],
     onStart:async session=>{
       current=session;
-      if(humanName)session.humanName=humanName;
-      room=tableConversation(session,bot?practiceReply:(name,context,signal)=>providerChat(seatConfig(name),context,signal),
-        stop.signal,message=>append(id,{chat:message}));
-      await append(id,{meta:{...session,events:[]}});
+      session.auditVersion=1;session.decisions=[];session.incidents=[];session.eventTimes=[];initClocks(session);
+      session.instructions={bet:SYSTEM,chat:CHAT_SYSTEM,choice:CHOICE_SYSTEM};
+      if(humanName){session.humanName=humanName;presence=seatPresence(session,stop.signal);}
+      room=tableConversation(session,(name,v,signal)=>bot?practiceReply(name,v):providerChat(seatConfig(name),v,signal),stop.signal,message=>log({chat:message}));
+      await log({meta:{...session,events:[]}});
+      if(!humanName)setDecisionJournal(session,row=>{log({receipt:row}).catch(()=>{});});
+      session.releasing=true;
     },
     onEvent:async event=>{
-      await append(id,{event});room.observe(event);
+      current.eventTimes.push(Date.now());
+      if(event.type==='deal' && options.format==='duplicate')initClocks(current);
+      if(event.type==='action'){
+        const receipt=current.decisions.findLast(r=>r.name===event.speaker && r.kind==='bet' && r.appliedEvent===undefined);
+        if(receipt)receipt.appliedEvent=event.index;
+      }
+      delete current.waitingFor;
+      const visible=humanName?sessionView(current,event.index,false,null).events[0]:event;
+      await log({event:visible,publishedAt:current.eventTimes[event.index]});room.observe(event);
       if(event.index===0)ready();
-      if(humanName){delete current.waitingFor;await showHandEnd(event,options,stop.signal);}
+      if(humanName)await showHandEnd(event,options,stop.signal);
     },
     decide:async (view,restartClock)=>{
       for(;;){
         stop.signal.throwIfAborted();current.status='running';current.waitingFor=view.name;delete current.error;
+        const start=Date.now(),seconds=BASE_SECONDS+current.clocks[view.name];
+        current.turnStartedAt=start;restartClock();
+        const deadline=AbortSignal.timeout(Math.ceil(seconds*1000));
+        const signal=AbortSignal.any([deadline,stop.signal]);
         try{
-          current.turnStartedAt=Date.now();
-          restartClock();
-          try{
-            if(view.name===humanName)return await human.wait(view,stop.signal,a=>recordTimeout(current,humanName,a));
-            const modelView={...view,tableChat:room.messages(view.hand)};
-            if(bot)return await bot(modelView);
-            return await providerMove(seatConfig(view.name),modelView,stop.signal);
-          }
-          finally{delete current.turnStartedAt;}
+          let answer;
+          if(view.name===humanName && current.seatPresence==='left')return {action:view.legal.check?'check':'fold',amount:0,chat:'',source:'away'};
+          if(view.name===humanName)answer=await human.wait(view,stop.signal,a=>recordTimeout(current,humanName,a),seconds);
+          else answer=await recordDecision(current,view.name,'bet',view.legal,async v=>{
+            try{return bot?await bot(v):await providerMove(seatConfig(v.name),v,signal);}
+            catch(error){signal.throwIfAborted();throw error;}
+          },stop.signal);
+          spendBank(current,view.name,start);return answer;
         }catch(e){
           stop.signal.throwIfAborted();
+          if(deadline.aborted || e.name==='TimeoutError'){
+            const action=view.legal.check?'check':'fold';
+            recordTimeout(current,view.name,action);spendBank(current,view.name,start);
+            return {action,amount:0,chat:'',source:'timeout'};
+          }
+          delete current.turnStartedAt;
           current.status='paused';current.error=view.name+' — '+(e instanceof SyntaxError?'Provider returned invalid JSON.':e.message);
-          current.incidents??=[];current.incidents.push({event:current.events.length,seat:view.name,error:current.error});
+          current.incidents.push({event:current.events.length,seat:view.name,error:current.error});
           await new Promise(resolve=>{wake=resolve;});wake=null;
-        }
+        }finally{delete current.turnStartedAt;}
       }
     }
-  }).then(async result=>{stop.abort();await room.flush();delete result.waitingFor;await append(id,{finish:{status:'complete',seed,incidents:result.incidents||[]}});})
-    .catch(async e=>{
-      fail(e);
-      if(current?.id===id){current.status=stop.signal.aborted?'stopped':'interrupted';current.seed=seed;delete current.waitingFor;await room?.flush();
-        await append(id,{finish:{status:current.status,seed,incidents:current.incidents||[]}});}
-    }).finally(()=>{task=null;abort=null;wake=null;human=null;room=null;stop.abort();});
+  }).then(()=>finish('complete'),async e=>{
+    fail(e);
+    if(current?.id===id)await finish(stop.signal.aborted?'stopped':'interrupted');
+  }).catch(error=>{if(current?.id===id){current.status='interrupted';current.error='Could not finalize the recording.';delete current.releasing;}console.error('Recording finalization failed.',error.code||error.name);})
+    .finally(()=>{task=null;abort=null;wake=null;human=null;room=null;presence=null;stop.abort();});
   await started;return id;
 }
 const json=(res,code,value)=>{res.writeHead(code,{'Content-Type':'application/json','Cache-Control':'no-store'});res.end(JSON.stringify(value));};
@@ -180,18 +228,22 @@ const app=http.createServer(async(req,res)=>{
       }
       if(req.method==='GET'&&p==='/api/sessions'){
         const ids=(await fs.readdir(data)).filter(f=>f.endsWith('.jsonl')).map(f=>f.slice(0,-6));
-        const sessions=await Promise.all(ids.map(async id=>{const {events,...meta}=await load(id);return {...meta,count:events.length};}));
+        const sessions=await Promise.all(ids.map(async id=>{const s=await load(id);return {id:s.id,mode:s.mode,status:s.status,created:s.created,rules:s.rules,count:s.events.length};}));
         return json(res,200,sessions);
       }
-      const match=p.match(/^\/api\/sessions\/([0-9a-f-]{36})(?:\/(retry|stop|move|chat))?$/);
+      const match=p.match(/^\/api\/sessions\/([0-9a-f-]{36})(?:\/(retry|stop|move|chat|presence|leave))?$/);
       if(match && req.method==='GET' && !match[2]){
         const s=await load(match[1]),from=Math.max(0,Number(url.searchParams.get('from'))||0);
-        return json(res,200,sessionView(s,from,ownsSeat(req),human?.turn??null,url.searchParams.has('private')));
+        const owner=current?.id===s.id && ownsSeat(req);
+        if(owner)presence?.heartbeat();
+        return json(res,200,sessionView(s,from,owner,human?.turn??null,url.searchParams.has('private')));
       }
       if(match && req.method==='POST' && current?.id===match[1] && task){
         if(human && !ownsSeat(req))return json(res,403,{error:'Only the player who took this seat can act.'});
         if(match[2]==='move'&&human)human.submit(await body(req));
-        else if(match[2]==='chat' && human && room)await room.send(await body(req));
+        else if(match[2]==='leave' && presence){presence.leave();human.leave();}
+        else if(match[2]==='chat' && human && room && current.seatPresence!=='left')await room.send(await body(req));
+        else if(match[2]==='presence' && presence){const {away}=await body(req);if(typeof away!=='boolean')throw Error('Choose a seat state');presence.set(away);}
         else if(match[2]==='retry'&&wake)wake();
         else if(match[2]==='stop'){abort.abort();wake?.();}
         else throw Error('Control unavailable');

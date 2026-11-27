@@ -14,9 +14,9 @@ export class HumanSeat {
   turn=null;
   #accept=null;
 
-  wait(view,signal,onTimeout){
+  wait(view,signal,onTimeout,seconds=TURN_LIMIT_SECONDS){
     signal.throwIfAborted();
-    const turn={id:crypto.randomUUID(),legal:view.legal,expiresAt:Date.now()+TURN_LIMIT_SECONDS*1000};
+    const turn={id:crypto.randomUUID(),legal:view.legal,expiresAt:Date.now()+seconds*1000};
     this.turn=turn;
     return new Promise((resolve,reject)=>{
       const clear=()=>{
@@ -30,10 +30,14 @@ export class HumanSeat {
       const timer=setTimeout(()=>{
         const action=view.legal.check?'check':'fold';
         onTimeout(action);
-        this.#accept({action,amount:0,chat:''});
-      },TURN_LIMIT_SECONDS*1000);
+        this.#accept({action,amount:0,chat:'',source:'timeout'});
+      },seconds*1000);
       signal.addEventListener('abort',cancel,{once:true});
     });
+  }
+
+  leave(){
+    if(this.turn)this.#accept({action:this.turn.legal.check?'check':'fold',amount:0,chat:'',source:'away'});
   }
 
   submit({turnId,move}){
@@ -51,15 +55,18 @@ export function activeSession(s){return s.status==='running'||s.status==='paused
 
 // Only showdown cards and the owner's own cards cross the dealer boundary during play.
 export function sessionView(session,from,owner,turn,wasPrivate=false){
-  const {events,...metadata}=session;
-  const privateTable=!!session.humanName && activeSession(session);
+  const {events,decisions,seed,releasing,...metadata}=session;
+  if(releasing && !activeSession(session))metadata.status='running';
+  const privateTable=!!session.humanName && (activeSession(session)||session.status==='interrupted'||releasing);
   const replaceHistory=wasPrivate&&!privateTable;
   const visible=events.slice(replaceHistory?0:from);
-  if(!privateTable)return {...metadata,events:visible,...(replaceHistory?{replaceHistory:true}:{})};
-  const name=owner?session.humanName:null;
-  return {...metadata,privateTable:true,mySeat:name,turn:owner?turn:null,events:visible.map(event=>{
-    const shown=new Set((event.shown||[]).map(p=>p.name));
-    if(lockedRunout(event))for(const p of event.players)if(!p.folded)shown.add(p.name);
-    return {...event,players:event.players.map(p=>p.name===name||shown.has(p.name)?p:{...p,cards:[],hiddenCount:p.cards.length})};
+  if(!privateTable)return {...metadata,...(seed?{seed}:{}),...(decisions?{decisions}:{}),events:visible,...(replaceHistory?{replaceHistory:true}:{})};
+  const name=owner && session.seatPresence!=='left'?session.humanName:null;
+  return {...metadata,privateTable:true,mySeat:name,canManage:owner,turn:name?turn:null,events:visible.map(event=>{
+    const shown=new Map((event.shown||[]).map(p=>[p.name,p.cards]));
+    if(lockedRunout(event))for(const p of event.players)if(!p.folded)shown.set(p.name,p.cards);
+    const visible={...event};
+    if(event.move){const {showCards,...move}=event.move;visible.move=move;}
+    return {...visible,players:event.players.map(p=>p.name===name?p:shown.has(p.name)?{...p,cards:shown.get(p.name)}:{...p,cards:[],hiddenCount:p.hiddenCount??p.cards.length})};
   })};
 }

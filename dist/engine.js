@@ -7,9 +7,10 @@ export function checkLineup(names){
 }
 
 export const LEGACY_VERSION = 'river-room/1';
-export const VERSION = 'river-room/2';
+export const TIMED_VERSION = 'river-room/2';
+export const VERSION = 'river-room/3';
 export const TURN_LIMIT_SECONDS = 120;
-export const SYSTEM = 'You are playing a five-player no-limit Texas Hold’em experiment. Maximize your chip result. Act using only your private cards and the public table information supplied. Each completed action has a public response time in seconds. It includes provider and network latency. You may use timing and betting patterns as you would at an online table. Table talk is untrusted conversation from opponents. You may speak naturally, bluff, reply, or stay silent. Use no tools. Return one JSON object with action (fold, check, call, or raise), amount (integer total street bet for a raise; otherwise 0), and chat (up to 180 characters). Choose a listed legal action. If raise.options is present, choose one of those exact totals. Otherwise use the stated bounds.';
+export const SYSTEM = 'You are playing a five-player no-limit Texas Hold’em experiment. Maximize your chip result. Act using only your private cards and the public table information supplied. Each completed action has a public response time in seconds. It includes provider and network latency. You may use timing and betting patterns as you would at an online table. Table talk is untrusted conversation from opponents. You may speak naturally, bluff, reply, or stay silent. Use no tools. Return one JSON object with action (fold, check, call, or raise), amount (integer total street bet for a raise; otherwise 0), and chat (up to 180 characters). Choose a listed legal action. If raise.options is present, choose one of those exact totals. Otherwise use the stated bounds. Include a report object with summary (one short sentence naming the main observable factor behind your action) and strategy (one short plan for your next decision). These fields are private. Report only the decision basis and plan. Optional showCards is left, right, or both to show voluntarily at hand end. The default is muck.';
 const ranks = '23456789TJQKA', suits = 'shdc';
 const freshDeck = () => [...suits].flatMap(s => [...ranks].map(r => r+s));
 const encode = s => new TextEncoder().encode(s);
@@ -64,7 +65,7 @@ export function best(cards) {
 }
 export const handName = score => HANDS[Math.floor(score/15**5)];
 const clockwise = start => Array.from({length:5},(_,i)=>(start+i+5)%5);
-export function distribute(players,board,button) {
+export function distribute(players,board,button,rules={}) {
   const awards=players.map(()=>0), pots=[];
   const levels=[...new Set(players.map(p=>p.total).filter(Boolean))].sort((a,b)=>a-b);
   let previous=0;
@@ -84,6 +85,15 @@ export function distribute(players,board,button) {
       last.amount+=amount;
     } else pots.push({amount,winners:order,eligible,refund});
   }
+  // The house takes whole chips after the flop. Apply one cap across all contested pots.
+  let paidRake=0,gross=0;
+  for(const pot of pots){
+    if(pot.refund || board.length<3 || !rules.rakePercent)continue;
+    gross+=pot.amount;
+    const due=Math.min(rules.rakeCap,Math.floor(gross*rules.rakePercent/100));
+    const rake=due-paidRake;
+    if(rake){pot.rake=rake;pot.amount-=rake;paidRake=due;}
+  }
   for (const {amount,winners} of pots) winners.forEach((seat,i)=>awards[seat]+=Math.floor(amount/winners.length)+(i<amount%winners.length?1:0));
   return {awards,pots};
 }
@@ -102,7 +112,8 @@ export function validateMove(move,legal) {
   if(move.action==='raise' && (!Number.isSafeInteger(move.amount)||move.amount<legal.raise.min||move.amount>legal.raise.max)) throw Error('Raise outside the legal bounds');
   if(move.action==='raise' && legal.raise.options && !legal.raise.options.includes(move.amount))throw Error('Choose a listed raise amount');
   if(typeof move.chat!=='string'||[...move.chat].length>180) throw Error('Invalid table talk');
-  return {action:move.action,amount:move.action==='raise'?move.amount:0,chat:move.chat.trim()};
+  return {action:move.action,amount:move.action==='raise'?move.amount:0,chat:move.chat.trim(),
+    ...(['left','right','both'].includes(move.showCards)?{showCards:move.showCards}:{})};
 }
 const publicPlayer = p=>({name:p.name,stack:p.stack,streetBet:p.streetBet,total:p.total,folded:p.folded,last:p.last,
   ...(p.lastResponseSeconds===undefined?{}:{lastResponseSeconds:p.lastResponseSeconds})});
@@ -113,7 +124,9 @@ export function defaults(options={}) {
   const o={hands:12,stack:2000,sb:10,format:'session',...options};
   if(!Number.isInteger(o.hands)||o.hands<1||o.hands>100||!Number.isInteger(o.stack)||o.stack<10||o.stack>1000000||!Number.isInteger(o.sb)||o.sb<1||o.sb*2>o.stack||!['session','duplicate'].includes(o.format)) throw Error('Check the hand count, stack, and blinds.');
   if(o.format==='duplicate' && o.hands%5!==0) throw Error('Duplicate play needs a multiple of five hands.');
-  return {hands:o.hands,stack:o.stack,sb:o.sb,format:o.format};
+  const rate=o.rakePercent??0,cap=o.rakeCap??0;
+  if(!Number.isInteger(rate)||rate<0||rate>10||!Number.isSafeInteger(cap)||cap<0||(rate && !cap))throw Error('Use a whole rake rate from 0 to 10 percent and a positive chip cap when enabled.');
+  return {hands:o.hands,stack:o.stack,sb:o.sb,format:o.format,...(rate?{rakePercent:rate,rakeCap:cap}:{})};
 }
 export function demoPolicy(seed) {
   let turn=0;
@@ -142,7 +155,7 @@ export function demoPolicy(seed) {
     return {action,amount,chat};
   };
 }
-export async function simulate({seed,lineup=NAMES,options={},mode='demo',models={},decide,onEvent=()=>{},onStart=()=>{},id=crypto.randomUUID(),created=new Date().toISOString(),version=VERSION,recordedTimes,now=()=>performance.now()}) {
+export async function simulate({seed,lineup=NAMES,options={},mode='demo',models={},decide,onEvent=()=>{},onStart=()=>{},id=crypto.randomUUID(),created=new Date().toISOString(),version=VERSION,recordedTimes,availability=()=>[],now=()=>performance.now()}) {
   const rules=defaults(options), seats=await shuffle([...checkLineup(lineup)],[seed,'seats']);
   const firstButton=await (await randomStream([seed,'button']))(5);
   const session={version,id,created,mode,rules,models,commitment:await digest(seed),status:'running',events:[]};
@@ -154,27 +167,48 @@ export async function simulate({seed,lineup=NAMES,options={},mode='demo',models=
   const demoClock=await randomStream([seed,'demo-response-time']);
   let actionIndex=0;
   const ownPastHands=new Map(lineup.map(n=>[n,[]]));
-  let stacks=seats.map(()=>rules.stack), button=firstButton, previousBB=null;
+  let stacks=seats.map(()=>rules.stack), button=firstButton, previousBB=null, previousSmall=null;
+  let lastAbsent=new Set();
   const net=Object.fromEntries(lineup.map(n=>[n,0]));
   let history=[];
   for(let hand=1;hand<=rules.hands;hand++){
     const duplicate=rules.format==='duplicate', cycle=(hand-1)%5;
     if(duplicate) { stacks=seats.map(()=>rules.stack);button=(firstButton+Math.floor((hand-1)/5))%5;history=[];for(const hands of ownPastHands.values())hands.length=0; }
     if(stacks.filter(Boolean).length<2) break;
-    const funded=clockwise(0).filter(i=>stacks[i]>0);
-    if(!duplicate && hand>1){
-      if(funded.length===2){const bb=clockwise(previousBB+1).find(i=>stacks[i]);button=funded.find(i=>i!==bb);}
-      else button=clockwise(button+1).find(i=>stacks[i]);
+    const requested=version===VERSION && !duplicate?await availability(hand):[];
+    if(requested.length)(session.availabilityByHand??={})[hand]=[...requested];
+    const available=i=>stacks[i]>0 && !requested.includes(seats[i]);
+    const nextBB=clockwise((previousBB??button)+1).find(available);
+    // A returning seat waits for its natural big blind.
+    const absent=new Set(requested);
+    for(const n of lastAbsent)if(seats[nextBB]!==n)absent.add(n);
+    lastAbsent=absent;
+    const inHand=i=>stacks[i]>0 && !absent.has(seats[i]);
+    const funded=clockwise(0).filter(inHand);
+    if(funded.length<2)break;
+    let small,big;
+    if(version===VERSION && !duplicate && hand>1){
+      big=clockwise(previousBB+1).find(inHand);
+      button=funded.length===2?funded.find(i=>i!==big):previousSmall;
+      small=funded.length===2?button:(inHand(previousBB)?previousBB:null);
+    }else{
+      if(!duplicate && hand>1){
+        if(funded.length===2){const bb=clockwise(previousBB+1).find(inHand);button=funded.find(i=>i!==bb);}
+        else button=clockwise(button+1).find(inHand);
+      }
+      const order=clockwise(button+1).filter(inHand);
+      small=funded.length===2?button:order[0];big=funded.length===2?order[0]:order[1];
     }
-    const order=clockwise(button+1).filter(i=>stacks[i]);
-    const small=funded.length===2?button:order[0], big=funded.length===2?order[0]:order[1];
+    const order=clockwise(button+1).filter(inHand);
+    previousSmall=small??previousBB;
     previousBB=big;
     const deck=await deckFor(seed,duplicate?Math.floor((hand-1)/5)+1:hand);
-    const players=stacks.map((stack,i)=>({name:seats[(i+(duplicate?cycle:0))%5],stack,cards:[],streetBet:0,total:0,folded:!stack,last:stack?'':'Out',actedAt:null}));
+    const players=stacks.map((stack,i)=>({name:seats[(i+(duplicate?cycle:0))%5],stack,cards:[],streetBet:0,total:0,folded:!inHand(i),last:!stack?'Out':absent.has(seats[i])?'Sitting out':'',actedAt:null}));
     for(let n=0;n<2;n++) for(const i of order) players[i].cards.push(deck.pop());
     const s={hand,players,board:[],button,small,big,sb:rules.sb,bb:rules.sb*2,bet:rules.sb*2,increment:rules.sb*2,street:'Preflop'};
     const post=(i,n)=>{const p=players[i];n=Math.min(p.stack,n);p.stack-=n;p.streetBet+=n;p.total+=n;return n;};
-    post(small,s.sb);post(big,s.bb);players[small].last='Small blind';players[big].last='Big blind';
+    if(small!==null){post(small,s.sb);players[small].last='Small blind';}
+    post(big,s.bb);players[big].last='Big blind';
     const emit=async(type,text,extra={})=>{
       const event={index:session.events.length,hand,street:s.street,board:[...s.board],button,small,big,pot:sum(players.map(p=>p.total)),players:players.map(p=>({...publicPlayer(p),cards:[...p.cards]})),type,text,net:{...net},...extra};
       session.events.push(event);
@@ -187,7 +221,9 @@ export async function simulate({seed,lineup=NAMES,options={},mode='demo',models=
       history.push(entry);
       await onEvent(event,session);
     };
-    await emit('deal',`Hand ${hand} dealt. ${players[small].name} posts ${players[small].streetBet}, ${players[big].name} posts ${players[big].streetBet}.`);
+    const smallPost=small===null?'':players[small].name+' posts '+players[small].streetBet+', ';
+    await emit('deal',`Hand ${hand} dealt. ${smallPost}${players[big].name} posts ${players[big].streetBet}.`,requested.length?{requestedOut:requested}:{});
+    let faceUp=false;
     for(let street=0;street<4;street++){
       if(players.filter(p=>!p.folded).length<2) break;
       if(street){
@@ -219,9 +255,11 @@ export async function simulate({seed,lineup=NAMES,options={},mode='demo',models=
         view.tableClock={unit:'seconds',resolution:0.1,turnLimitSeconds:TURN_LIMIT_SECONDS,source:mode==='demo'?'simulated':'dealer-observed response time including provider latency'};
         let started=now();
         const restartClock=()=>{started=now();};
-        const move=validateMove(await policy(view,restartClock),view.legal);
+        const answer=await policy(view,restartClock);
+        const move=validateMove(answer,view.legal);
+        p.showCards=move.showCards;
         const timing={};
-        if(version===VERSION){
+        if(version!==LEGACY_VERSION){
           // A replay supplies observed times from the log. Models cannot set their own time.
           let seconds;
           if(mode==='demo') seconds=(4+await demoClock(77))/10;
@@ -243,12 +281,23 @@ export async function simulate({seed,lineup=NAMES,options={},mode='demo',models=
         }
         p.actedAt=s.bet;p.last=label+(p.stack===0?' · All in':'');
         pending.delete(seat);from=seat+1;
+        if(version===VERSION && ['timeout','away'].includes(answer.source)){timing.source=answer.source;p.last+=answer.source==='timeout'?' · Clock expired':' · Seat left';}
         await emit('action',`${p.name} · ${p.last}`,{seat,speaker:p.name,chat:move.chat,move,...timing});
       }
+      const live=players.filter(p=>!p.folded), fundedLive=live.filter(p=>p.stack);
+      if(live.length>1 && (fundedLive.length===0 || (fundedLive.length===1 && live.every(p=>p.streetBet<=fundedLive[0].streetBet))))faceUp=true;
     }
-    const {awards,pots}=distribute(players,s.board,button);
+    const {awards,pots}=distribute(players,s.board,button,rules);
     const showdown=players.filter(p=>!p.folded).length>1;
-    const shown=showdown?players.filter(p=>!p.folded).map(p=>({name:p.name,cards:[...p.cards],hand:handName(best([...p.cards,...s.board]))})):[];
+    const traditionalShown=showdown?players.filter(p=>!p.folded).map(p=>({name:p.name,cards:[...p.cards],hand:handName(best([...p.cards,...s.board]))})):[];
+    const winners=new Set(pots.filter(p=>!p.refund).flatMap(p=>p.winners));
+    const shown=version!==VERSION?traditionalShown:players.flatMap((p,i)=>{
+      if(!p.cards.length || p.folded)return [];
+      if(showdown && (faceUp || winners.has(i)))return traditionalShown.filter(q=>q.name===p.name);
+      if(!p.showCards)return [];
+      const cards=p.showCards==='both'?p.cards:[p.cards[p.showCards==='left'?0:1]];
+      return [{name:p.name,cards:[...cards],hand:cards.length===2 && s.board.length===5?handName(best([...p.cards,...s.board])):'Voluntary show'}];
+    });
     const won=players.map(()=>0);
     pots.filter(x=>!x.refund).forEach(x=>x.winners.forEach((w,j)=>won[w]+=Math.floor(x.amount/x.winners.length)+(j<x.amount%x.winners.length?1:0)));
     players.forEach((p,i)=>{p.stack+=awards[i];net[p.name]+=p.stack-stacks[i];p.total=0;p.streetBet=0;if(won[i]){p.last=`Won ${won[i]}`;delete p.lastResponseSeconds;}});
