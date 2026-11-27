@@ -32,42 +32,101 @@ export function transcript(session,through){
   return lines.sort((a,b)=>a.index-b.index);
 }
 
-export function tableConversation(session,reply,save=async()=>{}){
+export function tableConversation(session,consider,signal,save=async()=>{}){
   session.tableChat=[];
-  async function say(speaker,chat,id){
-    const e=session.events.at(-1);
-    const message={id,index:e.index,hand:e.hand,street:e.street,speaker,chat};
-    await save(message);
-    session.tableChat.push(message);
+  session.chatMode='group';
+  const seats=session.lineup.filter(name=>name!==session.humanName && session.models[name]?.kind!=='typesafe')
+    .map(name=>({name,timer:null,due:Infinity,depth:Infinity,running:false,nextAllowed:0}));
+  const duplicate=session.rules.format==='duplicate';
+  let writes=Promise.resolve();
+  const active=()=>!signal.aborted && ['running','paused'].includes(session.status);
+
+  // Serialize human and model posts so disk, replay and every reader see the same order.
+  function post(speaker,chat,id,hand){
+    const write=writes.then(async()=>{
+      if(!active())throw Error('This session has ended.');
+      if(session.tableChat.some(m=>m.id===id))return false;
+      const e=session.events.at(-1);
+      if(duplicate && hand!==undefined && hand!==e.hand)return false;
+      const message={id,index:e.index,hand:e.hand,street:e.street,speaker,chat};
+      await save(message);
+      session.tableChat.push(message);
+      return true;
+    });
+    writes=write.catch(()=>{});
+    return write;
   }
-  return async ({text,id})=>{
-    if(typeof id!=='string'||!/^[\w-]{1,64}$/.test(id))throw Error('Invalid message ID.');
-    if(session.tableChat.some(m=>m.id===id))return;
-    if(typeof text!=='string'||!text.trim()||[...text].length>180)throw Error('Enter a message of up to 180 characters.');
-    if(session.chatBusy)throw Error('Wait for the current chat reply.');
-    if(session.status!=='running' && session.status!=='paused')throw Error('This session has ended.');
-    const names=session.events[0].players.map(p=>p.name).filter(n=>n!==session.humanName && session.models[n]?.kind!=='typesafe');
-    const words=text.toLowerCase();
-    const normalized=' '+words.replace(/[^\p{L}\p{N}_-]+/gu,' ').trim()+' ';
-    const addressed=names.find(n=>normalized.includes(' '+n.toLowerCase()+' '));
-    const turn=session.tableChat.filter(m=>m.speaker===session.humanName).length;
-    const name=addressed||names[turn%names.length];
-    session.chatBusy=name||'Dealer';
-    session.chatError='';
-    try{await say(session.humanName,text.trim(),id);}catch(error){session.chatBusy='';throw error;}
-    if(!name){session.chatBusy='';return;}
-    // A chat call sees public information only and cannot submit a poker action.
+
+  function schedule(seat,delay,depth){
+    if(!active())return;
+    const due=Math.max(Date.now()+delay,seat.nextAllowed);
+    seat.depth=Math.min(seat.depth,depth);
+    if(due>=seat.due)return;
+    seat.due=due;
+    clearTimeout(seat.timer);
+    if(!seat.running)seat.timer=setTimeout(()=>think(seat),Math.max(0,due-Date.now()));
+  }
+
+  function notifySeats(except,delay,depth=0){
+    for(const seat of seats)if(seat.name!==except)schedule(seat,delay+Math.random()*400,depth);
+  }
+
+  async function think(seat){
+    const depth=seat.depth;
+    seat.depth=Infinity;seat.due=Infinity;
+    if(!active())return;
+    if(session.status==='paused'){schedule(seat,35000,0);return;}
+    seat.running=true;
+    // Each seat has its own clock. Coalesce messages received while it is thinking.
+    seat.nextAllowed=Date.now()+12000;
     const event=session.events.at(-1);
-    const context={name,hand:event.hand,street:event.street,board:[...event.board],pot:event.pot,
-      players:event.players.map(p=>({name:p.name,stack:p.stack,folded:p.folded})),
-      conversation:transcript(session,event.index).slice(-18).map(({speaker,chat})=>({speaker,chat})),
-      message:{speaker:session.humanName,chat:text.trim()}};
-    Promise.resolve().then(()=>reply(name,context)).then(async answer=>{
-      if(!['running','paused'].includes(session.status))return;
-      if(typeof answer!=='string'||!answer.trim()||[...answer.trim()].length>180)throw Error('Invalid chat reply.');
-      await say(name,answer.trim(),crypto.randomUUID());
-    }).catch(()=>{session.chatError=name+' could not send a reply.';}).finally(()=>{session.chatBusy='';});
+    try{
+      const conversation=transcript(session,event.index).filter(m=>!duplicate || m.hand===event.hand);
+      const context={name:seat.name,hand:event.hand,street:event.street,board:event.board,pot:event.pot,
+        players:event.players.map(({name,stack,folded,last})=>({name,stack,folded,last})),
+        lastEvent:event.text,conversation:conversation.map(({hand,street,speaker,chat})=>({hand,street,speaker,chat}))};
+      const answer=await consider(seat.name,context,signal);
+      if(typeof answer!=='string'||[...answer.trim()].length>180)throw Error('Invalid chat response.');
+      if(answer.trim() && active() && await post(seat.name,answer.trim(),crypto.randomUUID(),event.hand)){
+        // Limit immediate follow-ups. All messages remain visible on the next independent check.
+        if(depth<2)notifySeats(seat.name,600,depth+1);
+        session.chatError='';
+      }
+    }catch{
+      if(active())session.chatError=seat.name+' could not check table chat.';
+    }finally{
+      seat.running=false;
+      const queued=seat.due-Date.now(), nextDepth=seat.depth;
+      seat.due=Infinity;seat.depth=Infinity;
+      if(Number.isFinite(queued))schedule(seat,queued,nextDepth);
+      else schedule(seat,35000+Math.random()*25000,0);
+    }
+  }
+
+  signal.addEventListener('abort',()=>{for(const seat of seats)clearTimeout(seat.timer);},{once:true});
+  return {
+    async send({text,id}){
+      if(!session.humanName)throw Error('Only a seated player can send chat.');
+      if(typeof id!=='string'||!/^[\w-]{1,64}$/.test(id))throw Error('Invalid message ID.');
+      if(typeof text!=='string'||!text.trim()||[...text].length>180)throw Error('Enter a message of up to 180 characters.');
+      if(await post(session.humanName,text.trim(),id))notifySeats(null,100);
+    },
+    observe(event){
+      if(event.type==='deal')notifySeats(null,1200+Math.random()*2600);
+      else if(event.chat)notifySeats(event.speaker,350);
+    },
+    messages(hand){
+      return session.tableChat.filter(m=>!duplicate || m.hand===hand);
+    },
+    flush:()=>writes
   };
 }
 
-export const practiceReply=(_name,context)=>'Hey '+context.message.speaker+'! Good to have you at the table.';
+export function practiceReply(name,{conversation,street}){
+  const last=conversation.at(-1);
+  if(last?.speaker===name || Math.random()>.28)return '';
+  const options=last?['I hear you, '+last.speaker+'.','Now I’m curious.','Poker face is staying on.']:
+    ['Good luck, everyone.','Anyone else here to see a flop?',street==='River'?'Interesting river.':'How’s the table doing?'];
+  const fresh=options.filter(line=>!conversation.some(m=>m.speaker===name && m.chat===line));
+  return fresh[Math.floor(Math.random()*fresh.length)]||'';
+}

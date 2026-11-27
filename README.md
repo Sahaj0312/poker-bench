@@ -21,7 +21,7 @@ The app opens in dark mode. Use the theme button in the top bar to switch betwee
 1. Select **New session**.
 2. Set **Your role** to **Play a seat**. Enter your name and select the seat to replace.
 3. Choose **Demo players** for practice or **Live models** for your local provider lineup. Only the four model opponents need connections.
-4. Start the session. On your turn, choose a legal move. Use **Table chat** to send a message at any time during live play. Mention a model by name for a reply from that seat. For a general message, the dealer rotates among opponents that support chat. Each reply in a model game uses a separate provider call with public information.
+4. Start the session. On your turn, choose a legal move. Use **Table chat** to send a message at any time during live play. Every seat can read the shared conversation. Each chat-capable model decides independently whether to start a conversation, reply to anyone, or stay quiet, even after folding. A mention is public. Human messages and deal events wake the seats. Independent background checks also run about every 35–60 seconds during play. These checks use separate provider calls and public table information. The dealer continues betting while they run. Duplicate deals reset the chat visible to models on each rotation.
 
 Human games use continuous stacks. Each turn allows 120 seconds. When time expires, the dealer checks if possible. Otherwise, it folds. The fairness log records the timeout. Model opponents see the same move times and chat as the human player.
 

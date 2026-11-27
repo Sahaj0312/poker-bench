@@ -29,9 +29,10 @@ globalThis.fetch=async (url,opt)=>{if(!String(url).startsWith('https://fixture.i
     if(!b.questions.move.criteria.check && !b.questions.move.criteria.call)throw Error('Missing choice options');
     return Response.json({answers:{move:{choice:v.legal.check?'check':'call'}}});
   }
-  if(v.message){
+  if(v.conversation){
     if(v.cards || v.players.some(p=>p.cards) || v.legal || v.seed)throw Error('Private chat context');
-    return Response.json({choices:[{message:{content:JSON.stringify({chat:'Hi from '+v.name})}}]});
+    const speak=['Lab 2','Lab 4'].includes(v.name) && v.conversation.some(m=>m.speaker==='Sam') && !v.conversation.some(m=>m.chat==='Hi from '+v.name);
+    return Response.json({choices:[{message:{content:JSON.stringify({chat:speak?'Hi from '+v.name:''})}}]});
   }
   if(v.players.some(p=>p.cards)||v.deck||v.seed)throw Error('Private state leaked');
   if(!v.tableClock||v.history.some(e=>e.type==='action'&&!Number.isFinite(e.responseSeconds)))throw Error('Missing public timing');
@@ -79,9 +80,9 @@ globalThis.fetch=async (url,opt)=>{if(!String(url).startsWith('https://fixture.i
   const chat=owner=>fetch(origin+'/api/sessions/'+humanId+'/chat',{method:'POST',headers:{Origin:origin,'Content-Type':'application/json',...(owner?{Cookie:cookie}:{})},body:JSON.stringify({id:'hello-1',text:'Hi @Lab 2!'})});
   assert.equal((await chat(false)).status,403);
   assert.equal((await chat(true)).status,200);
-  for(let i=0;i<100 && (await read(true)).tableChat.length<2;i++)await new Promise(r=>setTimeout(r,10));
+  for(let i=0;i<300 && (await read(true)).tableChat.length<3;i++)await new Promise(r=>setTimeout(r,50));
   assert.equal((await chat(true)).status,200);
-  assert.deepEqual((await read(false)).tableChat.map(m=>m.chat),['Hi @Lab 2!','Hi from Lab 2']);
+  assert.deepEqual((await read(false)).tableChat.map(m=>m.chat).sort(),['Hi @Lab 2!','Hi from Lab 2','Hi from Lab 4'].sort());
   let usedTurn=null,finished=null;
   for(let i=0;i<400;i++){
     const view=await read(true);
@@ -105,7 +106,7 @@ globalThis.fetch=async (url,opt)=>{if(!String(url).startsWith('https://fixture.i
     }
     await new Promise(r=>setTimeout(r,10));
   }
-  assert.equal(finished.tableChat.length,2);
+  assert.equal(finished.tableChat.length,3);
   assert.ok(usedTurn && finished);assert.equal(finished.humanName,'Sam');
   assert.equal(await verify(finished),finished.events.length);
   const restored=await read(true,'?from=3&private=1');

@@ -132,7 +132,7 @@ export function demoPolicy(seed) {
     if(l.raise && choice<Math.min(.34,strength*.25)) action='raise';
     else if(l.call && choice>Math.min(.97,.49+strength*.48-Math.min(.32,l.call/(v.pot+1))*.65)) action='fold';
     const amount=action==='raise'?Math.min(l.raise.max,l.raise.min + v.bigBlind*(await next(3))):0;
-    const prior=[...v.history].reverse().find(h=>h.chat && h.speaker!==v.name);
+    const prior=v.tableChat?.findLast(m=>m.speaker!==v.name) || [...v.history].reverse().find(h=>h.chat && h.speaker!==v.name);
     let chat='';
     if(await next(100)<47) {
       const lines=talk[action].filter(line=>line!==prior?.chat);
