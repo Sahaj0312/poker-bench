@@ -53,8 +53,10 @@ test('a chat posted while a request runs is absent from its reconstructed input'
   assert.equal(first.report.reasoning,undefined);
   await recordDecision(s,name,'chat',null,v=>{
     assert.equal(v.privateStrategy,first.report.strategy);
-    assert.deepEqual(v.conversation.map(m=>m.id),['later']);return '';
+    assert.deepEqual(v.conversation.map(m=>m.id),['later']);return {chat:'',report:{aside:'Aces, huh?',strategy:'unused'}};
   },new AbortController().signal);
+  assert.deepEqual(s.decisions.at(-1).report,{aside:'Aces, huh?'});
+  assert.deepEqual(s.decisions.at(-1).output,{chat:''});
   await recordDecision(s,s.events[0].players[1].name,'chat',null,v=>{
     assert.equal(v.privateStrategy,'');return '';
   },new AbortController().signal);

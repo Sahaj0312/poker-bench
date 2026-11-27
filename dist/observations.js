@@ -55,7 +55,7 @@ export function observation(s,r){
 
 export function decisionReport(raw){
   const report={};
-  for(const key of ['summary','strategy'])if(typeof raw?.[key]==='string' && raw[key].trim())report[key]=Array.from(raw[key].trim()).slice(0,320).join('');
+  for(const key of ['aside','summary','strategy'])if(typeof raw?.[key]==='string' && raw[key].trim())report[key]=Array.from(raw[key].trim()).slice(0,320).join('');
   return Object.keys(report).length?report:null;
 }
 
@@ -76,8 +76,9 @@ export async function recordDecision(s,name,kind,legal,request,signal,id){
       const chat=typeof answer==='string'?answer:answer?.chat;
       if(typeof chat!=='string'||[...chat.trim()].length>180)throw Error('Invalid chat reply');
       row.output={chat:chat.trim()};
-      const summary=decisionReport(answer?.report)?.summary;
-      if(summary)row.report={summary};
+      const report=decisionReport(answer?.report);
+      if(report?.aside)row.report={aside:report.aside};
+      else if(report?.summary)row.report={summary:report.summary};
     }else{
       row.output={action:answer.action,amount:answer.amount,chat:answer.chat,showCards:answer.showCards||null};
       row.report=decisionReport(answer.report);

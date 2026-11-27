@@ -171,3 +171,8 @@
 .decisionrecords pre {white-space:pre-wrap;overflow-wrap:anywhere;max-height:24rem;overflow:auto}
 .decisionrecords select,.showchoice select {font:inherit;max-width:100%}
 .showchoice {display:block;font-size:.875rem;margin:.5rem 0}
+
+
+.player-aside {margin:1rem 0;padding-inline-start:1rem;border-inline-start:2px solid currentColor}
+.player-aside figcaption {font-size:.875rem;color:var(--muted)}
+.player-aside blockquote {margin:.35rem 0 0;font-size:1.1rem;line-height:1.45}

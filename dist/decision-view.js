@@ -39,6 +39,12 @@ export function decisionViewer(s,through,host,jump){
       // Construct detailed inputs only when a reader opens the request.
       item.ontoggle=()=>{
         if(!item.open||item.children.length>1)return;
+        if(available && r.report?.aside){
+          const aside=element('figure','');
+          aside.className='player-aside';
+          aside.append(element('figcaption',r.name+' · Private aside'),element('blockquote',r.report.aside));
+          item.append(aside);
+        }
         const utc=n=>new Date(n).toISOString();
         item.append(element('p','Dealer sent '+utc(r.dispatchedAt)+(available&&r.returnedAt?' · Dealer finished '+utc(r.returnedAt):'')+' · Input through event '+(r.event+1)));
         if(available){

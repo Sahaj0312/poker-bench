@@ -36,7 +36,7 @@ globalThis.fetch=async (url,opt)=>{if(!String(url).startsWith('https://fixture.i
   }
   if(v.players.some(p=>p.cards)||v.deck||v.seed)throw Error('Private state leaked');
   if(!v.tableClock||v.history.some(e=>e.type==='action'&&!Number.isFinite(e.responseSeconds)))throw Error('Missing public timing');
-  const text=JSON.stringify({action:v.legal.check?'check':'call',amount:0,chat:'Test message',report:{summary:'Fixture pot odds.',strategy:'Fixture private note for '+v.name},reasoning:'discarded fixture field'});
+  const text=JSON.stringify({action:v.legal.check?'check':'call',amount:0,chat:'Test message',report:{aside:'Forty? I can live with that.',strategy:'Fixture private note for '+v.name},reasoning:'discarded fixture field'});
   return Response.json(b.system?{content:[{type:'text',text}]}:{choices:[{message:{content:text}}]});};`);
   let server;
   const start=async()=>{server=spawn(process.execPath,['--import',mock,path.join(root,'server.mjs')],{env:{...process.env,PORT:String(port),PATH:dir+path.delimiter+process.env.PATH,RIVER_DATA_DIR:path.join(dir,'data')},stdio:['ignore','pipe','inherit']});await once(server.stdout,'data');};
@@ -119,7 +119,7 @@ globalThis.fetch=async (url,opt)=>{if(!String(url).startsWith('https://fixture.i
   assert.equal(finished.tableChat.length,3);
   assert.ok(usedTurn && finished);assert.equal(finished.humanName,'Sam');
   assert.equal(await verify(finished),finished.events.length);
-  assert.ok(finished.decisions.some(d=>d.report?.summary==='Fixture pot odds.'));
+  assert.ok(finished.decisions.some(d=>d.report?.aside==='Forty? I can live with that.'));
   assert.ok(!JSON.stringify(finished).includes('discarded fixture field'));
   const {observation}=await import('../dist/observations.js');
   assert.ok(finished.decisions.filter(d=>d.kind==='chat').some(d=>observation(finished,d).conversation.some(m=>m.id==='hello-1')));
